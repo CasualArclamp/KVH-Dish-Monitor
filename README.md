@@ -48,8 +48,11 @@ the timestamps are interpolated from the `$GPRMC` fixes.
   wake limits, the search threshold, the expected elevation and the highest GEO elevation
   for your latitude. Drag to zoom, double-click to reset, hover or use the arrow keys for
   values. **Table** lists the ticks and **CSV** downloads them.
-- **Events:** search, tracking, state and lock changes, RF board messages, commands and
-  replies, and bridge notes.
+- **Events:** search, tracking, state and lock changes, the sidelobe check (new beam,
+  main beam), RF board messages, commands and replies, and bridge notes. When satellite
+  settings change on the TV-Hub, it explains the checksum mismatch and the reinstall and
+  restart that follow, and shows which slots changed from what to what. A find far from
+  the satellite's expected elevation is flagged as a likely sidelobe.
 - **Cards:**
   - the current transponder (`RF: FREQ`)
   - the SATCONFIG slots, comparing the RF board's copy with the antenna's
@@ -85,6 +88,9 @@ the serial number blanked.
   signal, and switching back to horizontal re-acquires it.
 - `samples/install-restart.log`: a satellite install (SATSETUP/SATCONFIG), a `ZAP`
   restart with the boot self-tests, and a search that finds USER6I.
+- `samples/sat-change.log`: USER6I edited on the TV-Hub. The checksum mismatch starts a
+  reinstall and restart. The antenna then re-acquires on vertical, and the sidelobe check
+  confirms the main beam.
 
 ## Parser CLI
 

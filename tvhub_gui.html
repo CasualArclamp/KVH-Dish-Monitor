@@ -183,7 +183,7 @@ label.check { display: inline-flex; align-items: center; gap: 5px; font-size: 12
       </div>
       <div class="legend" id="chartLegend">
         <span><span class="sw" style="background:var(--good)"></span>Tracking (TRACKSAT)</span>
-        <span><span class="sw" style="background:var(--warn)"></span>Acquiring (ACQTOTRK, WAITIDCHECK, CONSCANSEARCH)</span>
+        <span><span class="sw" style="background:var(--warn)"></span>Acquiring (ACQTOTRK, WAITIDCHECK, CONSCANSEARCH, CHECKSIDELOBE)</span>
         <span><span class="sw" style="background:var(--serious)"></span>Searching (SEARCH*, REACQ)</span>
         <span><span class="sw" style="background:var(--crit)"></span>Satellite lost (TRKSATLOST)</span>
         <span>Drag to zoom · double-click to reset · hairlines mark events</span>
@@ -276,7 +276,7 @@ function nearestIdx(ts, t, maxDist) {
 
 // ============================================================ domain constants
 const GEO_RATIO = 6378.137 / 42164.17;  // Earth radius / GEO orbit radius
-const PHASE_OF = { TRACKSAT: 'track', ACQTOTRK: 'acq', WAITIDCHECK: 'acq', CONSCANSEARCH: 'acq',
+const PHASE_OF = { TRACKSAT: 'track', ACQTOTRK: 'acq', WAITIDCHECK: 'acq', CONSCANSEARCH: 'acq', CHECKSIDELOBE: 'acq',
                    SEARCH0: 'search', SEARCH1A: 'search', REACQ: 'search', TRKSATLOST: 'lost' };
 const phaseOf = s => !s ? 'other' : PHASE_OF[s] || (/^SEARCH/.test(s) ? 'search' : 'other');
 const PHASE_NAME = { track: 'tracking', acq: 'acquiring', search: 'searching', lost: 'satellite lost', other: 'other' };
@@ -298,6 +298,7 @@ function newModel() {
     status: null, version: null, hw: null, state: null, stateSince: null, subSince: null,
     sel: null, freq: null, satcfg: new Map(), lnb: null, antlnb: null, installed: null, settings: {},
     antcfg: new Map(), satsetup: new Map(), satck: {}, look: {}, lnbCheck: null, selftests: {}, systemId: null,
+    sidelobe: null, rfSel: null, satckAsk: {}, satckAnt: {}, slotChanged: {},
     search: {}, sleepLimits: null, boresight: null, savedPos: null, azoffset: null, gyro: null, residue: null,
     drift: null, trackBias: null, parts: {},
     ticks: { t: [], az: [], el: [], skew: [], rf: [], snr: [], sub: [], bstAz: [], bstEl: [], bst3: [] },
@@ -310,6 +311,11 @@ let pendRaw = [], pendEv = [];
 const isLive = () => M.hello && M.hello.mode === 'live';
 const nowT = () => isLive() ? Date.now() / 1000 : (M.t1 ?? Date.now() / 1000);
 const ago = t => isNum(t) ? `${fmtClock(t)} (${fmtDur(nowT() - t)} ago)` : '—';
+
+const SLOT_FIELDS = ['freq', 'sr', 'fec', 'nid', 'pol', 'band', 'decoder'];
+const slotDiffers = (a, b) => SLOT_FIELDS.some(f => String(a[f]).toUpperCase() !== String(b[f]).toUpperCase());
+const slotText = c => `${c.freq} MHz ${c.pol}/${c.band} ${c.sr} ksym/s ${c.fec} ${c.decoder}`;
+const lonText = v => isNum(v) ? `${fmt(Math.abs(v), 2)}° ${v < 0 ? 'W' : 'E'}` : '—';
 
 function ev(t, lvl, grp, text, marker) {
   const e = { t, lvl, grp, text };
@@ -386,12 +392,30 @@ const H = {
     ev(t, 'info', 'rf', `Transponder ${r.sat} ${r.freq} MHz ${r.pol}/${r.band} · ${fmtInt(r.sr)} ksym/s ${r.fec} ${r.decoder} · NID ${r.nid}`);
   },
   rf_satinstall(r, t) { M.installed = r.sats || [r.sat]; ev(t, 'info', 'rf', 'RF: satellites installed ' + M.installed.join(', ')); },
-  rf_satconfig(r, t) {
-    M.satcfg.set(r.sat + '#' + r.slot, r);
-    ev(t, 'info', 'rf', `SATCONFIG ${r.sat} slot ${r.slot}: ${r.freq} MHz ${r.pol}/${r.band} · ${fmtInt(r.sr)} ${r.fec} ${r.decoder} · NID ${r.nid}`);
+  rf_satconfig(r, t) {  // per-slot lines are summarised: only disagreements and changes become events
+    const key = r.sat + '#' + r.slot, ant = M.antcfg.get(key), prev = M.satcfg.get(key);
+    M.satcfg.set(key, r);
+    if (ant && slotDiffers(ant, r)) {
+      ev(t, 'bad', 'rf', `RF board's ${r.sat} slot ${r.slot} (${slotText(r)}) differs from what the antenna sent (${slotText(ant)})`);
+    } else if (!ant && prev && slotDiffers(prev, r)) {
+      M.slotChanged[key] = t;
+      ev(t, 'cmd', 'rf', `${r.sat} slot ${r.slot} changed: ${slotText(prev)} → ${slotText(r)}`, r.sat + ' changed');
+    }
   },
+  rf_installed(r, t) { ev(t, 'good', 'rf', `RF board confirmed ${r.count} satellites installed`); },
   rf_lnb(r, t) { M.lnb = r; ev(t, 'info', 'rf', `RF: LNB ${r.switching} · LO ${r.lo ?? r.lo_text}`); },
-  rf_select(r, t) { M.sel = { sat: r.sat, pol: r.pol, band: r.band, t }; ev(t, 'info', 'rf', `RF board set to ${r.sat} ${r.pol}/${r.band}`); },
+  rf_select(r, t) {
+    // The RF board repeats this every few seconds while the slot is invalid; report changes only.
+    const p = M.rfSel;
+    M.rfSel = r;
+    if (p && p.sat === r.sat && p.pol === r.pol && p.band === r.band && p.valid === r.valid) return;
+    M.sel = { sat: r.sat, pol: r.pol, band: r.band, t };
+    if (r.valid === false) {
+      const slot = [...M.satcfg.values()].find(c => c.sat === r.sat && c.pol === r.pol && c.band === r.band);
+      ev(t, 'warn', 'rf', `RF board flags ${r.sat} ${r.pol}/${r.band} as invalid (I)` +
+         (slot && slot.freq === 0 ? ': that slot has frequency 0 in SATCONFIG' : ''));
+    } else ev(t, 'info', 'rf', `RF board set to ${r.sat} ${r.pol}/${r.band}`);
+  },
   rf_id(r, t) { ev(t, 'info', 'rf', `RF: ${r.text} ${r.id}` + (M.freq ? ` (satellite ID ${M.freq.nid})` : '')); },
   rf_other(r, t) { ev(t, 'info', 'rf', 'RF: ' + r.text); },
   mode(r, t) {
@@ -410,10 +434,9 @@ const H = {
   search_bound(r, t) { ev(t, 'info', 'track', `Search start/end AZ ${fmt(r.az, 2)} EL ${fmt(r.el, 2)}`); },
   sat_found(r, t) {
     M.search.found = r;
-    const g = geometry();
-    let text = `Satellite found at AZ ${fmt(r.az, 1)} EL ${fmt(r.el, 1)} (RF ${r.rf})`, lvl = 'good';
-    if (g && r.el > g.elMax) { text += ` — above the GEO arc (${fmt(g.elMax, 1)}°), so a sidelobe or false detect`; lvl = 'warn'; }
-    ev(t, lvl, 'track', text, 'Found');
+    const off = elevationCheck(r.el);
+    ev(t, off ? 'warn' : 'good', 'track',
+       `Satellite found at AZ ${fmt(r.az, 1)} EL ${fmt(r.el, 1)} (RF ${r.rf})` + (off ? `: ${off}, likely a sidelobe` : ''), 'Found');
   },
   transition(r, t) {
     const wake = /^sleep$/i.test(r.from_mode);
@@ -421,9 +444,29 @@ const H = {
   },
   boresight(r, t) { M.boresight = r; ev(t, 'info', 'track', `Boresight AZ ${fmt(r.az, 2)} EL ${fmt(r.el, 2)}`); },
   sleep_limits(r, t) { M.sleepLimits = r; ev(t, 'info', 'track', `Sleep SNR wake limits ${fmt(r.lo_db, 2)} / ${fmt(r.hi_db, 2)} dB`); },
-  note(r, t) { ev(t, 'info', 'track', 'Sleep: ' + r.text); },
+  note(r, t) { ev(t, 'info', 'track', r.raw); },
+  sidelobe_check(r, t) {
+    M.sidelobe = r;
+    ev(t, 'info', 'track', `Sidelobe check: AGC ${r.current} vs threshold ${r.threshold} (saved ${r.saved}) · SNR ${fmt(r.snr, 2)} dB`);
+  },
+  sidelobe_agc(r) { M.sidelobe = r; },
+  beam_found(r, t) { ev(t, 'good', 'track', `New beam found at AZ ${fmt(r.az, 1)} EL ${fmt(r.el, 1)} (RF ${r.rf})`, 'New beam'); },
+  beam_move(r, t) { ev(t, 'info', 'track', `Moving to the new beam: ${r.axis} ${fmt(r.cur, 2)} → ${fmt(r.beam, 2)}`); },
+  main_beam(r, t) { ev(t, 'good', 'track', 'Sidelobe check passed: on the main beam', 'Main beam'); },
+  sat_change(r, t) { ev(t, 'info', 'track', `Satellite change ${r.from_sat} → ${r.to_sat}`, r.to_sat); },
+  search_step(r) { M.search.step = r; },
+  ack(r, t) {
+    if (r.cmd === 'HALT') ev(t, 'warn', 'cmd', 'Antenna halted (HALT)', 'Halt');
+    else if (r.cmd === 'TRACK') ev(t, 'info', 'cmd', 'Tracking resumed (TRACK)', 'Track');
+    else ev(t, 'cmd', 'cmd', `Acknowledged ${r.cmd}`);
+  },
   azel_dist(r, t) { ev(t, 'info', 'track', `AZ/EL distance ${fmt(r.az, 2)} / ${fmt(r.el, 2)}`); },
-  echo(r, t) { ev(t, 'cmd', 'cmd', 'TV-Hub received ' + r.cmd); },
+  echo(r, t) {
+    const ck = /^SATCK,([^,]+),(\w+)$/i.exec(r.cmd);
+    if (ck) { M.satckAsk[ck[1].toUpperCase()] = { ck: ck[2].toUpperCase(), t }; return; }
+    if (/^(SATCONFIG|SATSETUP|SATINSTALL)\b/i.test(r.cmd)) return;  // install traffic: summarised elsewhere
+    ev(t, 'cmd', 'cmd', 'TV-Hub received ' + r.cmd);
+  },
   tx(r, t) { ev(t, 'cmd', 'cmd', 'Sent ' + r.cmd); },
   local_echo(r, t) { ev(t, 'cmd', 'cmd', 'Typed in the capture: ' + r.cmd); },
   reply(r, t) { ev(t, 'cmd', 'cmd', 'Reply: ' + r.text); },
@@ -454,17 +497,45 @@ const H = {
     ev(t, r.ok ? 'good' : 'warn', 'sys', `LNB voltage check: expected ${fmt(r.expected, 1)} V, actual ${fmt(r.actual, 1)} V`);
   },
   satsetup(r, t) {
+    const prev = M.satsetup.get(r.sat), off = v => `skew offset ${fmt(v, 1)}°`;
     M.satsetup.set(r.sat, r);
-    ev(t, r.skew_offset ? 'warn' : 'cmd', 'cmd', `Satellite ${r.sat} set up at ${fmtLon(r.lon)}` +
-       (r.skew_offset ? `, skew offset ${fmt(r.skew_offset, 1)}°` : ''));
+    if (!prev) {
+      ev(t, r.skew_offset ? 'warn' : 'cmd', 'cmd', `Satellite ${r.sat} at ${lonText(r.lon)}` + (r.skew_offset ? `, ${off(r.skew_offset)}` : ''));
+    } else if (prev.lon !== r.lon || prev.skew_offset !== r.skew_offset) {
+      ev(t, 'cmd', 'cmd', `${r.sat} changed: ${lonText(prev.lon)}, ${off(prev.skew_offset)} → ${lonText(r.lon)}, ${off(r.skew_offset)}`,
+         r.sat + ' changed');
+    }
   },
-  satconfig(r) { if (r.slot === 99) M.satck[r.sat] = r.checksum; else M.antcfg.set(r.sat + '#' + r.slot, r); },
-  satck(r) { M.satck[r.sat] = r.checksum; },
+  satconfig(r, t) {  // the antenna's copy, sent by the TV-Hub at install: report slots whose settings changed
+    if (r.slot === 99) { M.satck[r.sat] = r.checksum; return; }
+    const key = r.sat + '#' + r.slot, prev = M.antcfg.get(key) || M.satcfg.get(key);
+    M.antcfg.set(key, r);
+    if (prev && slotDiffers(prev, r)) {
+      M.slotChanged[key] = t;
+      ev(t, 'cmd', 'cmd', `${r.sat} slot ${r.slot} changed: ${slotText(prev)} → ${slotText(r)}`, r.sat + ' changed');
+    }
+  },
+  satck(r, t) {  // the antenna's checksum reply to the TV-Hub's SATCK query
+    const sat = r.sat.toUpperCase(), ck = r.checksum.toUpperCase(), ask = M.satckAsk[sat], was = M.satckAnt[sat];
+    M.satck[r.sat] = r.checksum;
+    M.satckAnt[sat] = ck;
+    if (!ask || t - ask.t > 15) return;
+    delete M.satckAsk[sat];
+    if (ask.ck !== ck) {
+      ev(t, 'warn', 'cmd', `${r.sat} settings differ: the TV-Hub has checksum ${ask.ck}, the antenna ${ck}, so the TV-Hub reinstalls the satellites`,
+         'Mismatch');
+    } else if (was && was !== ck) {
+      ev(t, 'good', 'cmd', `${r.sat} settings confirmed on the antenna (checksum ${ck})`);
+    }
+  },
   sat_error(r, t) { ev(t, 'warn', 'cmd', 'SAT: ' + r.text); },
   look_angles(r) { M.look[r.sat] = r; },
   system_id(r) { M.systemId = r; },
   boot_note(r, t) { ev(t, 'info', 'sys', r.text); },
-  install_note(r, t) { ev(t, 'info', 'cmd', 'Install: ' + r.text); },
+  install_note(r, t) {
+    const m = /^uiSatsToInstall,(\d+)/.exec(r.text);
+    if (m) ev(t, 'cmd', 'cmd', `TV-Hub installing ${m[1]} satellites`, 'Install');
+  },
   ee_write(r, t) { ev(t, 'info', 'sys', `EEPROM page ${r.page} written (${r.sat})`); },
   ee_status(r, t) { ev(t, 'info', 'sys', 'EE status ' + r.text); },
   part_version(r, t) { M.parts[r.name] = r; ev(t, 'info', 'sys', `${r.name} rev ${r.rev} v${r.version} (${r.part})`); },
@@ -528,6 +599,20 @@ function lookAngles(lat, lon, satLonDeg) {  // true azimuth, elevation and polar
     skew: Math.atan(Math.sin(dl) / Math.tan(la)) / rad,
   };
 }
+// +POS elevation on this antenna reads about 0.9° above the true elevation (IS-19: 55.8 vs 54.8;
+// 156°E: ~58.4 vs 57.6), so compare it with the satellite's expected elevation plus that offset.
+const POS_EL_OFFSET = 0.9, EL_TOLERANCE = 2.0;
+function elevationCheck(el) {  // null when fine, else a short warning about a probable sidelobe
+  const g = geometry();
+  if (!g || !isNum(el)) return null;
+  // expected true elevation: from the satellite's longitude, else the antenna's own boot-time look angles
+  const look = g.sat && M.look[g.sat], expected = isNum(g.el) ? g.el : look && isNum(look.el) ? look.el : null;
+  if (expected != null) {
+    const d = el - (expected + POS_EL_OFFSET);
+    return Math.abs(d) > EL_TOLERANCE ? `${fmt(Math.abs(d), 1)}° ${d > 0 ? 'above' : 'below'} where ${g.sat} should be` : null;
+  }
+  return el > g.elMax + POS_EL_OFFSET + EL_TOLERANCE ? 'above the GEO arc' : null;
+}
 function geometry() {
   const site = siteLatLon();
   if (!site) return null;
@@ -564,7 +649,8 @@ const PANELS = [
     refs: () => M.sleepLimits ? [{ v: M.sleepLimits.lo_db, label: 'sleep wake lo' }, { v: M.sleepLimits.hi_db, label: 'hi' }] : [] },
   { id: 'rf', title: 'RF metric', unit: '', dec: 0, floor0: true, minSpan: 1000, series: [{ key: 'rf', name: 'RF', color: 's1' }],
     refs: () => M.search.threshold != null ? [{ v: M.search.threshold, label: 'search threshold' }] : [] },
-  { id: 'agc', title: 'AGC', unit: '', dec: 0, minSpan: 200, series: [{ agc: true, name: 'AGC', color: 's1' }] },
+  { id: 'agc', title: 'AGC', unit: '', dec: 0, minSpan: 200, series: [{ agc: true, name: 'AGC', color: 's1' }],
+    refs: () => M.sidelobe && M.sidelobe.threshold ? [{ v: M.sidelobe.threshold, label: 'sidelobe threshold' }] : [] },
   { id: 'el', title: 'Elevation', unit: '°', dec: 1, minSpan: 2,
     series: [{ key: 'el', name: 'POS', color: 's1' }, { key: 'bstEl', name: 'BST', color: 's2' }],
     refs: () => { const g = geometry(), out = [];
@@ -1223,8 +1309,10 @@ function renderTiles() {
   let satSub = f ? `${f.freq} MHz · ${f.decoder}` : 'no RF: FREQ line yet';
   if (f && sel && (f.pol !== sel.pol || f.band !== sel.band)) satSub = `last lock was ${f.pol}/${f.band} ${f.freq} MHz`;
   setTile('sat', ((p && p.sat) || (sel && sel.sat) || '—') + (sel ? ` ${sel.pol}/${sel.band}` : ''), satSub);
+  const offBeam = p && p.substate === 'TRACKSAT' ? elevationCheck(p.el) : null;
   setTile('point', p ? `${fmt(p.el, 1)}° / ${fmt(p.az, 1)}°` : '—',
-    p ? `skew ${fmt(p.skew, 1)}°` + (M.bst ? ` · BST ${fmt(M.bst.el, 1)}°` : '') : '');
+    offBeam ? dotLabel('warn', `EL ${offBeam}: sidelobe?`)
+      : p ? `skew ${fmt(p.skew, 1)}°` + (M.bst ? ` · BST ${fmt(M.bst.el, 1)}°` : '') : '');
   const lv = lnbReading();
   let lnbSub;
   if (!lv) lnbSub = 'reported every ~5 min';
@@ -1294,11 +1382,14 @@ function renderSatCard() {
     return { c: rf || an, check };
   }).sort((a, b) => a.c.sat.localeCompare(b.c.sat) || a.c.slot - b.c.slot);
   if (cfg.length) {
-    const both = M.antcfg.size > 0;
+    const both = M.antcfg.size > 0, changed = Object.keys(M.slotChanged).length > 0;
     out.push(section('SATCONFIG slots',
-      table(['Sat', 'Slot', 'Pol/band', 'MHz', 'ksym/s', 'FEC', 'Decoder', ...(both ? ['RF vs antenna'] : [])],
-            cfg.map(({ c, check }) => [c.sat, String(c.slot), `${c.pol}/${c.band}`, String(c.freq), String(c.sr), c.fec, c.decoder,
-                                       ...(both ? [check] : [])]),
+      table(['Sat', 'Slot', 'Pol/band', 'MHz', 'ksym/s', 'FEC', 'Decoder', ...(both ? ['RF vs antenna'] : []), ...(changed ? ['Changed'] : [])],
+            cfg.map(({ c, check }) => {
+              const at = M.slotChanged[c.sat + '#' + c.slot];
+              return [c.sat, String(c.slot), `${c.pol}/${c.band}`, String(c.freq), String(c.sr), c.fec, c.decoder,
+                      ...(both ? [check] : []), ...(changed ? [at ? fmtClock(at) : ''] : [])];
+            }),
             cfg.map(({ c }) => sel && c.sat === sel.sat && c.pol === sel.pol && c.band === sel.band ? 'hl' : '')),
       note((sel ? 'Bold row: the slot for the commanded pol/band. ' : '') +
            (both ? 'RF vs antenna compares the RF board\'s copy with the one the antenna sent at install.' : ''))));
@@ -1316,7 +1407,8 @@ function renderSearchCard() {
   let found = null;
   if (S.found) {
     found = `AZ ${fmt(S.found.az, 1)} EL ${fmt(S.found.el, 1)} RF ${S.found.rf} · ${ago(S.found.t)}`;
-    if (g && S.found.el > g.elMax) found = dotLabel('warn', found + ' · above the GEO arc');
+    const off = elevationCheck(S.found.el);
+    if (off) found = dotLabel('warn', `${found} · ${off}`);
   }
   out.push(section('Search and tracking', kv([
     ['Detection threshold', S.threshold != null ? `${S.threshold}` + (S.target ? ` (searching for ${S.target})` : '') : 'not seen yet'],
@@ -1324,6 +1416,10 @@ function renderSearchCard() {
     ['Last search start', S.start ? `AZ ${fmt(S.start.az, 2)} EL ${fmt(S.start.el, 2)} · ${ago(S.start.t)}` : null],
     ['Last found', found],
     ['Sleep wake limits', M.sleepLimits ? `SNR ${fmt(M.sleepLimits.lo_db, 2)} / ${fmt(M.sleepLimits.hi_db, 2)} dB` : null],
+    ['Sidelobe check', M.settings.SIDELOBE || M.sidelobe
+      ? [M.settings.SIDELOBE && M.settings.SIDELOBE.value,
+         M.sidelobe && M.sidelobe.threshold ? `saved AGC ${M.sidelobe.saved}, threshold ${M.sidelobe.threshold}, SNR ${fmt(M.sidelobe.snr, 2)} dB · ${fmtClock(M.sidelobe.t)}` : null]
+        .filter(Boolean).join(' · ') : null],
     ['Boresight', M.boresight ? `AZ ${fmt(M.boresight.az, 2)} EL ${fmt(M.boresight.el, 2)}` : null],
     ['Saved sat position', M.savedPos ? `AZ ${fmt(M.savedPos.az, 2)} EL ${fmt(M.savedPos.el, 2)}` : null],
     ['AZ offset', M.azoffset ? `${fmt(M.azoffset.offset, 2)} ${M.azoffset.flag || ''}` : null],

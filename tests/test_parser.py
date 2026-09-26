@@ -14,6 +14,7 @@ from tvhub_parser import (LineSplitter, fill_times, format_log_line, load_record
 # Real captures with the GPS position moved and the serial number blanked.
 SAMPLE_LOG = os.path.join(ROOT, "samples", "pol-switch.log")        # V/L -> lock lost -> H/L -> re-acquire
 INSTALL_LOG = os.path.join(ROOT, "samples", "install-restart.log")  # satellite install + ZAP restart
+SATCHANGE_LOG = os.path.join(ROOT, "samples", "sat-change.log")     # USER6I edited on the TV-Hub -> reinstall
 
 # (line, expected subset of the parsed record). Lines are from the project notes and tvhub.log.
 CASES = [
@@ -52,7 +53,10 @@ CASES = [
      dict(kind="rf_satconfig", sat="USER6I", slot=0, freq=11804, sr=30000, fec="1/2", nid="0XFFFE",
           pol="V", band="H", decoder="LQPSK")),
     ("RF: LNB,13/18V,10700,N,ON,OFF,N,OFF", dict(kind="rf_lnb", switching="13/18V", lo=10700)),
-    ("+RF: S,166EN,H,L,V", dict(kind="rf_select", sat="166EN", pol="H", band="L", async_=True)),
+    ("+RF: S,166EN,H,L,V", dict(kind="rf_select", sat="166EN", pol="H", band="L", async_=True, valid=True)),
+    ("+RF: S,USER2,V,H,I", dict(kind="rf_select", sat="USER2", valid=False)),
+    ("RF: NORMON", dict(kind="rf_flag", flag="NORMON")),
+    ("RF: Sats Installed: 4", dict(kind="rf_installed", count=4)),
     ("RF: LOCKRESET", dict(kind="rf_flag", flag="LOCKRESET")),
     ("RF: something new", dict(kind="rf_other", text="something new")),
     ("+*** Entering Search Mode 0 ***", dict(kind="mode", search_mode=0, search_mode_name="local")),
@@ -139,6 +143,22 @@ CASES = [
     ("Using Computed Bias - Stationary", dict(kind="boot_note")),
     ("Limit Switch Status: PASS", dict(kind="limit_switch", result="PASS")),
     (">STATE: Idle", dict(kind="state", state="Idle", reply=True)),
+    # sidelobe check output (SIDELOBE=ON)
+    ("+*** Entering Check SideLobe ***", dict(kind="mode", text="Entering Check SideLobe")),
+    ("Current  59724, Saved      0, Threshold      0, SNR  1.73",
+     dict(kind="sidelobe_check", current=59724, saved=0, threshold=0, snr=1.73)),
+    ("AGC Saved  60564, Threshold  59564, SNR 13.63", dict(kind="sidelobe_agc", saved=60564, threshold=59564, snr=13.63)),
+    ("New Beam Found: AZ = 358.2, EL =  57.5, RF = 4356", dict(kind="beam_found", az=358.2, el=57.5, rf=4356)),
+    ("Move to New Beam EL Cur   49.96, Beam =   57.55, Unwrap =   -7.57",
+     dict(kind="beam_move", axis="EL", cur=49.96, beam=57.55, unwrap=-7.57)),
+    ("Main Beam", dict(kind="main_beam")),
+    ("+HALT", dict(kind="ack", cmd="HALT")),
+    ("+DEBUGON", dict(kind="ack", cmd="DEBUGON")),
+    ("SLEEP(  Unknown command", dict(kind="unknown_cmd", cmd="SLEEP(")),
+    ("+Satellite Change: USER6I to USER6", dict(kind="sat_change", from_sat="USER6I", to_sat="USER6")),
+    ("At End Position AZ =  181.18, EL =   43.76", dict(kind="search_bound", az=181.18, el=43.76)),
+    ("Target Position   44.70", dict(kind="search_step", target=44.70)),
+    ("EL Min/Max - Discrim Off", dict(kind="note", text="EL Min/Max - Discrim Off")),
     ("!", dict(kind="unparsed")),
     ("Some brand new line", dict(kind="unparsed")),
 ]
@@ -284,6 +304,36 @@ class InstallLogTests(unittest.TestCase):
         self.assertEqual(len(ant), 16)
         self.assertEqual(rf, ant)
         self.assertEqual(rf[("166EN", 2)], (12549, 4279, "2/3", "0XFFFE", "V", "L", "L8PSK"))
+
+
+@unittest.skipUnless(os.path.exists(SATCHANGE_LOG), "sample capture not present")
+class SatChangeLogTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.records, _ = load_records(SATCHANGE_LOG)
+
+    def test_only_v42_unparsed(self):
+        self.assertEqual({r["raw"] for r in self.records if r["kind"] == "unparsed"}, {"V42"})
+
+    def test_checksum_handshake(self):
+        # The TV-Hub asks with the new checksum FB while the antenna still has F8; after the
+        # reinstall and restart the antenna reports FB.
+        asks = [r["cmd"].split(",")[2] for r in self.records if r["kind"] == "echo" and r["cmd"].startswith("SATCK,USER6I,")]
+        replies = [r["checksum"] for r in self.records if r["kind"] == "satck" and r["sat"] == "USER6I"]
+        self.assertEqual(asks, ["F8", "FB", "FB"])
+        self.assertEqual(replies, ["F8", "F8", "FB"])
+
+    def test_new_user6i_slots_reach_the_rf_board(self):
+        fields = ("freq", "sr", "fec", "pol", "band", "decoder")
+        rf = {r["slot"]: tuple(r[f] for f in fields) for r in self.records
+              if r["kind"] == "rf_satconfig" and r["sat"] == "USER6I"}
+        self.assertEqual(rf[0], (12486, 30000, "2/3", "V", "H", "L8PSK"))
+        self.assertEqual(rf[1], (12517, 30000, "3/5", "H", "H", "L8PSK"))
+        self.assertIn(4, [r["count"] for r in self.records if r["kind"] == "rf_installed"])
+
+    def test_sidelobe_check_confirms_main_beam(self):
+        kinds = [r["kind"] for r in self.records]
+        self.assertLess(kinds.index("sidelobe_check"), kinds.index("main_beam"))
 
 
 if __name__ == "__main__":

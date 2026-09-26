@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 
 _NUM = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
 _RE_NUM_GROUP = re.compile(r"\(\?P<(\w+)>" + re.escape(_NUM) + r"\)")
-_INT_FIELDS = {"rf", "threshold", "agc", "power", "slot", "freq", "sr", "lo", "idx", "search_mode"}
+_INT_FIELDS = {"rf", "threshold", "agc", "power", "slot", "freq", "sr", "lo", "idx", "search_mode", "current", "saved"}
 
 
 def _n(name: str) -> str:
@@ -64,6 +64,19 @@ _SIMPLE_RULES = [
     ("temp", "telemetry", rf"^TEMP\s*=\s*{_n('temp')}\s*deg\s*C\b"),
     ("hours", "telemetry", rf"^\+?Operational Hours\s*=\s*{_n('hours')}"),
     ("lnb_check", "event", rf"^LNB VOLTAGE:\s*Expected\s+{_n('expected')},\s*Actual\s+{_n('actual')}"),
+    # sidelobe check (SIDELOBE=ON): AGC compared with the saved main-beam AGC minus a margin
+    ("sidelobe_check", "event",
+     rf"^Current\s+{_n('current')},\s*Saved\s+{_n('saved')},\s*Threshold\s+{_n('threshold')},\s*SNR\s+{_n('snr')}"),
+    ("sidelobe_agc", "housekeeping",
+     rf"^AGC Saved\s+{_n('saved')},\s*Threshold\s+{_n('threshold')},\s*SNR\s+{_n('snr')}"),
+    ("beam_found", "event", rf"^New Beam Found:\s*AZ\s*=\s*{_n('az')},\s*EL\s*=\s*{_n('el')},\s*RF\s*=\s*{_n('rf')}"),
+    ("beam_move", "event",
+     rf"^Move to New Beam\s+(?P<axis>AZ|EL)\s+Cur\s+{_n('cur')},\s*Beam\s*=\s*{_n('beam')},\s*Unwrap\s*=\s*{_n('unwrap')}"),
+    ("main_beam", "event", r"^Main Beam\s*$"),
+    ("sat_change", "event", r"^\+?Satellite Change:\s*(?P<from_sat>\S+)\s+to\s+(?P<to_sat>\S+)"),
+    ("search_bound", "event", rf"^At End Position\s+AZ\s*=\s*{_n('az')},\s*EL\s*=\s*{_n('el')}"),
+    ("search_step", "event", rf"^Target Position\s+{_n('target')}\s*$"),  # rows of the search raster (EL?)
+    ("note", "event", r"^(?P<text>EL Min/Max.*)$"),
     ("look_angles", "boot",
      rf"^\+GPS:\s*(?P<sat>[^:\s]+)\s+AZ\s*=\s*{_n('az')},\s*EL\s*=\s*{_n('el')},\s*SKEW\s*=\s*{_n('skew')}"),
     ("sat_error", "reply", r"^SAT:\s*(?P<text>.+)$"),
@@ -128,10 +141,11 @@ _RE_VERSION = re.compile(
     r"^\+?KVH\s+(?P<model>.+?)\s+Rev\s+(?P<rev>\S+)\s+-\s+Version\s+(?P<version>\S+)"
     r"\s+-\s+Serial Number\s+(?P<serial>\S+)\s+-\s+SystemID\s+(?P<system_id>\S+)")
 _RE_RF_ID = re.compile(r"^([A-Z]),([^,]*),(0[xX][0-9A-Fa-f]+)$")
+_RE_ACK = re.compile(r"^\+([A-Z][A-Z0-9]{2,15})$")
 _RE_RF_VERSION = re.compile(r"^(?P<desc>.+?)\s+REV\s+(?P<rev>\w+)\s+VER\s+(?P<version>[\d.]+)\s+SW\s+(?P<part>[\w-]+)")
 _RE_GPS_STATUS = re.compile(
     r"^\+GPS:\s*UTC:\s*(?P<utc_time>[\d.]+),\s*Lat:\s*(?P<lat>[\d.]+)(?P<ns>[NS]),\s*Long:\s*(?P<lon>[\d.]+)(?P<ew>[EW])")
-_RF_FLAGS = {"AGCON", "AGCOFF", "SDON", "SDOFF", "LOCKRESET", "CHECKID"}
+_RF_FLAGS = {"AGCON", "AGCOFF", "SDON", "SDOFF", "LOCKRESET", "CHECKID", "NORMON", "NORMOFF"}
 
 # Command words we know of; a bare line that starts with one of these is the capturing
 # terminal's own copy of a typed command (ncat -o logs both directions), not device output.
@@ -254,6 +268,9 @@ def _parse_rf(body: str, async_: bool) -> dict:
     m = _RE_RF_VERSION.match(body)
     if m:
         return {"kind": "part_version", "cat": "boot", "name": "RF", **m.groupdict()}
+    m = re.match(r"^Sats Installed:\s*(\d+)$", body)
+    if m:
+        return {**rec, "kind": "rf_installed", "count": int(m.group(1))}
     if head == "SATINSTALL" and len(parts) >= 2:
         sats = [p for p in parts[1:] if p]
         return {**rec, "kind": "rf_satinstall", "sat": sats[0] if sats else "", "sats": sats}
@@ -265,8 +282,11 @@ def _parse_rf(body: str, async_: bool) -> dict:
             out["lo_text"] = parts[2]
         return out
     if head == "S" and len(parts) >= 4:
+        # Last field (inferred): V = usable slot, I = invalid; I is repeated every few seconds for slots
+        # whose SATCONFIG frequency is 0.
+        flag = parts[4] if len(parts) > 4 else ""
         return {**rec, "kind": "rf_select", "sat": parts[1], "pol": parts[2], "band": parts[3],
-                "extra": parts[4:]}
+                "valid": {"V": True, "I": False}.get(flag), "extra": parts[4:]}
     if head == "I" and len(parts) >= 2:
         try:
             vals = [float(p) for p in parts[1:]]
@@ -416,6 +436,9 @@ def parse_line(line: str) -> dict:
             return {"kind": "satck", "cat": "reply", "sat": p[0], "checksum": p[1]}
     if s == "+ZAP":
         return {"kind": "restart", "cat": "event"}
+    m = _RE_ACK.match(s)
+    if m:  # the antenna acknowledging a bare command word: +HALT, +TRACK, +DEBUGON, ...
+        return {"kind": "ack", "cat": "reply", "cmd": m.group(1)}
     m = _RE_GPS_STATUS.match(s)
     if m:
         return {"kind": "gps_status", "cat": "boot", "utc_time": m.group("utc_time"),
