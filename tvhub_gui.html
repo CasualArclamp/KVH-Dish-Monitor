@@ -561,7 +561,7 @@ const PANEL_H = 84, GUT_L = 58, GUT_R = 14;
 const TSTEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
 const PANELS = [
   { id: 'snr', title: 'SNR', unit: ' dB', dec: 2, floor0: true, minSpan: 4, series: [{ key: 'snr', name: 'SNR', color: 's1' }],
-    refs: () => M.sleepLimits ? [{ v: M.sleepLimits.lo_db, label: 'sleep wake lo' }, { v: M.sleepLimits.hi_db, label: 'sleep wake hi' }] : [] },
+    refs: () => M.sleepLimits ? [{ v: M.sleepLimits.lo_db, label: 'sleep wake lo' }, { v: M.sleepLimits.hi_db, label: 'hi' }] : [] },
   { id: 'rf', title: 'RF metric', unit: '', dec: 0, floor0: true, minSpan: 1000, series: [{ key: 'rf', name: 'RF', color: 's1' }],
     refs: () => M.search.threshold != null ? [{ v: M.search.threshold, label: 'search threshold' }] : [] },
   { id: 'agc', title: 'AGC', unit: '', dec: 0, minSpan: 200, series: [{ agc: true, name: 'AGC', color: 's1' }] },
@@ -636,6 +636,16 @@ function viewRange() {
   return [start, end];
 }
 
+function fitText(ctx, text, maxW) {  // text, or as much of it as fits followed by an ellipsis
+  if (maxW < 24) return '';
+  if (ctx.measureText(text).width <= maxW) return text;
+  let lo = 0, hi = text.length;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (ctx.measureText(text.slice(0, mid) + '…').width <= maxW) lo = mid; else hi = mid - 1;
+  }
+  return lo ? text.slice(0, lo) + '…' : '';
+}
 function niceStep(range, count) {
   const raw = range / count, mag = 10 ** Math.floor(Math.log10(raw)), n = raw / mag;
   return (n < 1.5 ? 1 : n < 3 ? 2 : n < 7 ? 5 : 10) * mag;
@@ -707,8 +717,11 @@ function drawPanel(ctx, lay, P, t0, t1, xOf, gap) {
     if (v > hi) hi = v;
   }
   P.yOf = null; P.ser = ser; P.tf = tf;
+  const slack = Math.max(p.minSpan, hi - lo);
+  const refs = lo === Infinity ? []
+    : (p.refs ? p.refs() : []).filter(r => isNum(r.v) && r.v >= lo - slack && r.v <= hi + slack);
 
-  // header: title, legend keys (2+ series), latest value in view
+  // header: title, legend keys (2+ series), reference-line key, latest value in view
   ctx.textBaseline = 'middle'; ctx.textAlign = 'left'; ctx.font = FONT_B; ctx.fillStyle = C.ink;
   const hy = head.y + head.h / 2;
   ctx.fillText(p.title, x0, hy);
@@ -720,9 +733,19 @@ function drawPanel(ctx, lay, P, t0, t1, xOf, gap) {
     ctx.fillStyle = C.ink2; ctx.fillText(s.name, lx + 17, hy);
     lx += 17 + ctx.measureText(s.name).width + 12;
   }
+  const vals = ser.map((s, k) => (ser.length > 1 ? s.name + ' ' : '') + (last[k] == null ? '—' : fmt(last[k], p.dec) + p.unit)).join('  ·  ');
+  if (refs.length) {  // named up here so no label ever sits on the data
+    const unit = p.unit.trim() === '°' ? '°' : p.unit;
+    const note = fitText(ctx, refs.map(r => `${r.label} ${fmt(r.v, p.dec)}`).join(' · ') + unit,
+                         x1 - ctx.measureText(vals).width - 16 - (lx + 19));
+    if (note) {
+      ctx.save(); ctx.setLineDash([3, 2]); ctx.strokeStyle = C.ink3; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(lx, Math.round(hy) + 0.5); ctx.lineTo(lx + 14, Math.round(hy) + 0.5); ctx.stroke(); ctx.restore();
+      ctx.fillStyle = C.ink3; ctx.fillText(note, lx + 19, hy);
+    }
+  }
   ctx.textAlign = 'right'; ctx.fillStyle = C.ink2;
-  const vals = ser.map((s, k) => (ser.length > 1 ? s.name + ' ' : '') + (last[k] == null ? '—' : fmt(last[k], p.dec) + p.unit));
-  ctx.fillText(vals.join('  ·  '), x1, hy);
+  ctx.fillText(vals, x1, hy);
 
   if (lo === Infinity) {
     ctx.strokeStyle = C.axis; ctx.lineWidth = 1;
@@ -730,8 +753,6 @@ function drawPanel(ctx, lay, P, t0, t1, xOf, gap) {
     ctx.textAlign = 'center'; ctx.fillStyle = C.ink3; ctx.fillText('no data in view', (x0 + x1) / 2, plot.y + plot.h / 2);
     return;
   }
-  const slack = Math.max(p.minSpan, hi - lo);
-  const refs = (p.refs ? p.refs() : []).filter(r => isNum(r.v) && r.v >= lo - slack && r.v <= hi + slack);
   for (const r of refs) { lo = Math.min(lo, r.v); hi = Math.max(hi, r.v); }
   if (p.floor0) lo = Math.min(lo, 0);
   if (hi - lo < p.minSpan) {
@@ -753,13 +774,10 @@ function drawPanel(ctx, lay, P, t0, t1, xOf, gap) {
     ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
     ctx.fillText(tickLabel(p.wrap ? ((v % 360) + 360) % 360 : v, step), x0 - 8, y);
   }
-  for (const r of refs) {  // thresholds and expectations: dashed, labelled at the right
+  for (const r of refs) {  // thresholds and expectations: dashed lines, named in the header
     const y = Math.round(yOf(r.v)) + 0.5;
     ctx.save(); ctx.setLineDash([4, 3]); ctx.strokeStyle = C.ink3; ctx.globalAlpha = 0.9;
     ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); ctx.restore();
-    const text = `${r.label} ${fmt(r.v, p.dec)}`, w = ctx.measureText(text).width, ly = y - 7 < plot.y + 6 ? y + 8 : y - 7;
-    ctx.fillStyle = C.surface; ctx.fillRect(x1 - w - 8, ly - 7, w + 6, 14);
-    ctx.fillStyle = C.ink2; ctx.textAlign = 'right'; ctx.fillText(text, x1 - 4, ly);
   }
   ctx.save();
   ctx.beginPath(); ctx.rect(x0, plot.y - 3, x1 - x0, plot.h + 6); ctx.clip();
@@ -1086,7 +1104,11 @@ class VList {
   paint() {
     const h = this.host.clientHeight || 400, first = Math.max(0, Math.floor(this.host.scrollTop / this.rowH) - 4);
     const n = Math.max(0, Math.min(this.items.length - first, Math.ceil(h / this.rowH) + 8));
-    while (this.pool.length < n) { const r = el('div', 'vrow'); this.win.append(r); this.pool.push(r); }
+    while (this.pool.length < n) {
+      const r = el('div', 'vrow');
+      r.style.height = this.rowH + 'px';  // must match the scroll maths exactly
+      this.win.append(r); this.pool.push(r);
+    }
     this.win.style.transform = `translateY(${first * this.rowH}px)`;
     for (let k = 0; k < this.pool.length; k++) {
       const row = this.pool[k];
