@@ -10,6 +10,14 @@ one HTML file with no external dependencies, so it works offline.
 
 Unofficial: not affiliated with or endorsed by KVH Industries.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshot-dark.png">
+  <img alt="The dashboard replaying samples/pol-switch.log. Tiles show SNR, RF, AGC, state, satellite, pointing, LNB supply and temperature. Strip charts show SNR falling to zero after a switch to vertical polarization and recovering after switching back to horizontal, above substate and state bands, next to the event log." src="docs/screenshot-light.png">
+</picture>
+
+*Replaying `samples/pol-switch.log` (times in UTC). Switching IS-19 to vertical loses the
+signal, and switching back to horizontal re-acquires it.*
+
 ## Run it
 
 ```
