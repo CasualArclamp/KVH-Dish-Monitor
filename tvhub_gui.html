@@ -1,0 +1,1623 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TV-Hub Monitor</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --surface-2: #f1f0ec; --ink: #0b0b0b; --ink-2: #52514e; --ink-3: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+  --s1: #2a78d6; --s2: #eb6834;
+  --good: #0ca30c; --warn: #fab219; --serious: #ec835a; --crit: #d03b3b;
+  --band: #e1e0d9; --unparsed-bg: rgba(250,178,25,0.18);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --surface-2: #252523; --ink: #ffffff; --ink-2: #c3c2b7; --ink-3: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --s1: #3987e5; --s2: #d95926; --band: #383835; --unparsed-bg: rgba(250,178,25,0.14);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --surface-2: #252523; --ink: #ffffff; --ink-2: #c3c2b7; --ink-3: #898781;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+  --s1: #3987e5; --s2: #d95926; --band: #383835; --unparsed-bg: rgba(250,178,25,0.14);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--page); color: var(--ink); font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+button, select, input { font: inherit; color: inherit; }
+.mono { font-family: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace; font-size: 12px; }
+.muted { color: var(--ink-2); }
+.small { font-size: 12px; }
+.grow { flex: 1 1 auto; }
+
+header.top { position: sticky; top: 0; z-index: 10; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+  padding: 10px 16px; background: var(--page); border-bottom: 1px solid var(--border); }
+header h1 { font-size: 15px; font-weight: 650; margin: 0; }
+.pill { display: inline-flex; align-items: center; gap: 7px; padding: 3px 10px; border: 1px solid var(--border);
+  border-radius: 999px; background: var(--surface); font-size: 12px; max-width: 100%; min-width: 0; }
+.pill .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; background: var(--ink-3); }
+.dot.good { background: var(--good); } .dot.warn { background: var(--warn); } .dot.serious { background: var(--serious); }
+.dot.bad { background: var(--crit); } .dot.info { background: var(--ink-3); } .dot.cmd { background: var(--s1); }
+.status { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+
+main { padding: 16px; display: grid; gap: 16px; max-width: 1680px; margin: 0 auto; }
+.tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+@media (min-width: 700px) { .tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (min-width: 1300px) { .tiles { grid-template-columns: repeat(8, minmax(0, 1fr)); } }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px 10px; min-width: 0; }
+.tile .label { color: var(--ink-2); font-size: 12px; }
+.tile .value { font-size: 20px; font-weight: 600; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .sub { color: var(--ink-2); font-size: 12px; margin-top: 2px; min-height: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 400px); gap: 16px; align-items: start; }
+@media (max-width: 1150px) { .row2 { grid-template-columns: minmax(0, 1fr); } }
+.row3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap: 16px; align-items: start; }
+
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px 14px; min-width: 0; }
+.card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+.card h2 { font-size: 13px; font-weight: 650; margin: 0 6px 0 0; }
+.sec + .sec { margin-top: 14px; }
+.sec h3 { font-size: 12px; font-weight: 600; color: var(--ink-2); margin: 0 0 6px; }
+dl.kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 14px; margin: 0; }
+dl.kv dt { color: var(--ink-2); }
+dl.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.empty-note { color: var(--ink-2); margin: 0; font-size: 12px; }
+.note { color: var(--ink-3); font-size: 11.5px; margin: 6px 0 0; }
+.table-scroll { overflow-x: auto; }
+table.t { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+table.t th { text-align: left; font-weight: 600; color: var(--ink-2); padding: 3px 6px; border-bottom: 1px solid var(--axis); white-space: nowrap; }
+table.t td { padding: 3px 6px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+table.t td.wrap { white-space: normal; }
+table.t tr.hl td { background: var(--surface-2); font-weight: 600; }
+
+.btn { border: 1px solid var(--border); background: var(--surface); border-radius: 8px; padding: 3px 10px; font-size: 12px;
+  cursor: pointer; color: var(--ink); }
+.btn:hover:not(:disabled):not([aria-pressed="true"]) { background: var(--surface-2); }
+.btn[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-right: 1px solid var(--border); background: var(--surface); padding: 3px 9px; font-size: 12px;
+  cursor: pointer; color: var(--ink-2); }
+.seg button:last-child { border-right: 0; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+.chips { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.chip { border: 1px solid var(--border); background: transparent; border-radius: 999px; padding: 1px 9px; font-size: 11.5px;
+  cursor: pointer; color: var(--ink-3); }
+.chip[aria-pressed="true"] { color: var(--ink); border-color: var(--axis); background: var(--surface-2); }
+select, input[type="search"], input[type="text"] { border: 1px solid var(--border); background: var(--page); border-radius: 8px;
+  padding: 3px 8px; font-size: 12px; }
+label.check { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-2); }
+.target { display: inline-flex; align-items: center; gap: 5px; }
+.target label { font-size: 12px; color: var(--ink-2); }
+.target input { border: 1px solid var(--border); background: var(--surface); border-radius: 8px; padding: 3px 8px; font-size: 12px;
+  font-variant-numeric: tabular-nums; }
+.target input:disabled { opacity: .55; }
+#hostIn { width: 9.5em; }
+#portIn { width: 4.5em; }
+
+.chart-wrap { position: relative; }
+#chart { display: block; width: 100%; touch-action: pan-y; cursor: crosshair; outline: none; border-radius: 6px; }
+#chart:focus-visible { box-shadow: 0 0 0 2px var(--s1); }
+.tip { position: absolute; z-index: 5; pointer-events: none; background: var(--surface); border: 1px solid var(--border);
+  box-shadow: 0 6px 24px rgba(0,0,0,.18); border-radius: 8px; padding: 8px 10px; font-size: 12px; width: 250px; }
+.tip-time { color: var(--ink-2); margin-bottom: 4px; }
+.tip-row { display: grid; grid-template-columns: 14px auto 1fr; gap: 7px; align-items: center; }
+.tip-row b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.tip-row .lbl { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.key { width: 12px; height: 2px; border-radius: 1px; }
+.tip-ev { color: var(--ink-2); margin-top: 5px; border-top: 1px solid var(--grid); padding-top: 4px; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; font-size: 12px; color: var(--ink-2); }
+.legend .sw { display: inline-block; width: 12px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+
+.vlist { position: relative; overflow: auto; border-top: 1px solid var(--grid); }
+.vlist .win { position: absolute; left: 0; right: 0; top: 0; }
+.vlist .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--ink-3); font-size: 12px; padding: 12px; text-align: center; }
+.vrow { height: 22px; display: flex; align-items: center; gap: 8px; white-space: nowrap; overflow: hidden; padding: 0 6px; }
+.vrow[hidden], .vlist .empty[hidden] { display: none; }
+#events { height: 600px; }
+#raw { height: 380px; }
+#ticksList { height: 560px; }
+.c-time { color: var(--ink-3); font-variant-numeric: tabular-nums; flex: none; }
+.c-text { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.c-tag { flex: none; width: 110px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; }
+.vrow.unparsed { background: var(--unparsed-bg); }
+.vrow.unparsed .c-tag { color: var(--ink); font-weight: 600; }
+.vrow.src-tx .c-text, .vrow.src-bridge .c-text { font-style: italic; }
+.ticks-row { display: grid; grid-template-columns: 80px repeat(9, minmax(52px, 1fr)) 118px; gap: 6px; align-items: center;
+  font-size: 12px; font-variant-numeric: tabular-nums; padding: 0 6px; }
+.ticks-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thead { color: var(--ink-2); font-weight: 600; height: 24px; border-bottom: 1px solid var(--axis); }
+#ticksList .vrow { display: grid; }
+
+.btnrow { display: flex; flex-wrap: wrap; gap: 6px; }
+#cmdForm { display: flex; gap: 6px; margin-top: 10px; }
+#cmdForm input { flex: 1 1 auto; min-width: 0; }
+#cmdResult { margin-top: 8px; min-height: 18px; font-size: 12px; color: var(--ink-2); }
+@media (max-width: 700px) { header.top { position: static; } }
+@media (max-width: 560px) { main { padding: 12px; } header.top { padding: 8px 12px; } .c-tag { width: 76px; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>TV-Hub monitor</h1>
+  <form id="targetForm" class="target" autocomplete="off">
+    <label for="hostIn">Dish IP</label>
+    <input id="hostIn" type="text" spellcheck="false" placeholder="192.168.50.214">
+    <span class="muted">:</span>
+    <input id="portIn" type="text" inputmode="numeric" spellcheck="false" placeholder="50001" aria-label="Port">
+    <button class="btn" type="submit">Connect</button>
+  </form>
+  <span id="targetMsg" class="small" hidden></span>
+  <span id="link" class="pill"><span class="dot"></span><span class="txt">Connecting to bridge…</span></span>
+  <span id="age" class="status small muted"></span>
+  <span class="grow"></span>
+  <div class="seg" role="group" aria-label="Time zone"><button id="tzLocal">Local</button><button id="tzUtc">UTC</button></div>
+  <button id="themeBtn" class="btn" title="Switch between automatic, light and dark">Theme: auto</button>
+</header>
+<main>
+  <section class="tiles" id="tiles"></section>
+  <section class="row2">
+    <div class="card" id="chartCard">
+      <div class="card-head">
+        <h2>Signal and pointing</h2>
+        <div class="seg" id="rangeBtns" role="group" aria-label="Time window"></div>
+        <button id="followBtn" class="btn" title="Keep the newest data in view">Follow</button>
+        <span class="grow"></span>
+        <div class="chips" id="panelChips" role="group" aria-label="Panels"></div>
+        <button id="tableBtn" class="btn" aria-pressed="false" title="Show the ticks in view as a table">Table</button>
+        <button id="csvBtn" class="btn" title="Download the ticks in view as CSV">CSV</button>
+      </div>
+      <div id="chartWrap" class="chart-wrap">
+        <canvas id="chart" tabindex="0" role="img" aria-label="Strip charts of SNR, RF metric, AGC and pointing over time. Use the Table button for the values."></canvas>
+        <div id="tip" class="tip" hidden></div>
+      </div>
+      <div id="tableWrap" hidden>
+        <div class="ticks-row thead" id="ticksHead"></div>
+        <div id="ticksList"></div>
+      </div>
+      <div class="legend" id="chartLegend">
+        <span><span class="sw" style="background:var(--good)"></span>Tracking (TRACKSAT)</span>
+        <span><span class="sw" style="background:var(--warn)"></span>Acquiring (ACQTOTRK, WAITIDCHECK, CONSCANSEARCH)</span>
+        <span><span class="sw" style="background:var(--serious)"></span>Searching (SEARCH*, REACQ)</span>
+        <span><span class="sw" style="background:var(--crit)"></span>Satellite lost (TRKSATLOST)</span>
+        <span>Drag to zoom · double-click to reset · hairlines mark events</span>
+      </div>
+    </div>
+    <div class="card" id="eventsCard">
+      <div class="card-head"><h2>Events</h2><span class="grow"></span><div class="chips" id="evChips" role="group" aria-label="Event filters"></div></div>
+      <div id="events"></div>
+    </div>
+  </section>
+  <section class="row3">
+    <div class="card"><div class="card-head"><h2>Satellite and transponder</h2></div><div id="satBody"></div></div>
+    <div class="card"><div class="card-head"><h2>Search and geometry</h2></div><div id="searchBody"></div></div>
+    <div class="card"><div class="card-head"><h2>Health</h2></div><div id="healthBody"></div></div>
+    <div class="card"><div class="card-head"><h2>Commands</h2><span class="grow"></span><span id="cmdMode" class="muted small"></span></div><div id="cmdBody"></div></div>
+  </section>
+  <section class="card">
+    <div class="card-head">
+      <h2>Raw stream</h2>
+      <select id="rawFilter" aria-label="Raw stream filter">
+        <option value="all">All lines</option>
+        <option value="quiet">Hide high-rate telemetry</option>
+        <option value="unparsed">Unparsed only</option>
+        <option value="cmd">Commands, replies, bridge</option>
+        <option value="rf">RF board</option>
+      </select>
+      <input id="rawSearch" type="search" placeholder="Filter text" aria-label="Filter raw lines by text">
+      <label class="check"><input type="checkbox" id="rawFollow" checked> Follow</label>
+      <span class="grow"></span>
+      <span id="rawCount" class="muted small"></span>
+    </div>
+    <div id="raw" class="mono"></div>
+  </section>
+</main>
+<script>
+'use strict';
+(() => {
+// ============================================================ helpers
+const $ = (s, root = document) => root.querySelector(s);
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+const store = {  // per-viewer conveniences only; the page works without storage
+  get(k, d) { try { const v = localStorage.getItem('tvhub.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('tvhub.' + k, JSON.stringify(v)); } catch { /* ignore */ } },
+};
+const isNum = v => typeof v === 'number' && Number.isFinite(v);
+const pad2 = n => String(n).padStart(2, '0');
+const fmt = (v, d = 1) => isNum(v) ? (v < 0 && Math.abs(v).toFixed(d) !== (0).toFixed(d) ? '−' : '') + Math.abs(v).toFixed(d) : '—';
+const fmtInt = v => isNum(v) ? Math.round(v).toLocaleString('en-US') : '—';
+let UTC = store.get('utc', false);
+
+function fmtClock(t, ms) {
+  const d = new Date(t * 1000);
+  const p = UTC ? [d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds(), d.getUTCMilliseconds()]
+                : [d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds()];
+  return `${pad2(p[0])}:${pad2(p[1])}:${pad2(p[2])}` + (ms ? '.' + String(p[3]).padStart(3, '0') : '');
+}
+function fmtDate(t) {
+  const d = new Date(t * 1000);
+  return UTC ? d.toISOString().slice(0, 10) : `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+const fmtDateTime = t => `${fmtDate(t)} ${fmtClock(t)}${UTC ? ' UTC' : ''}`;
+function fmtDur(sec) {
+  sec = Math.max(0, Math.round(sec));
+  if (sec < 60) return sec + ' s';
+  if (sec < 3600) return Math.floor(sec / 60) + ' min ' + (sec % 60) + ' s';
+  if (sec < 86400) return Math.floor(sec / 3600) + ' h ' + Math.floor((sec % 3600) / 60) + ' min';
+  return Math.floor(sec / 86400) + ' d ' + Math.floor((sec % 86400) / 3600) + ' h';
+}
+function fmtDurShort(sec) {
+  sec = Math.max(0, Math.round(sec));
+  if (sec < 60) return sec + 's';
+  if (sec < 3600) return Math.floor(sec / 60) + 'm ' + pad2(sec % 60) + 's';
+  if (sec < 86400) return Math.floor(sec / 3600) + 'h ' + pad2(Math.floor((sec % 3600) / 60)) + 'm';
+  return Math.floor(sec / 86400) + 'd ' + Math.floor((sec % 86400) / 3600) + 'h';
+}
+const fmtLat = v => isNum(v) ? Math.abs(v).toFixed(4) + '° ' + (v < 0 ? 'S' : 'N') : '—';
+const fmtLon = v => isNum(v) ? Math.abs(v).toFixed(4) + '° ' + (v < 0 ? 'W' : 'E') : '—';
+function lowerBound(a, x) { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m] < x) lo = m + 1; else hi = m; } return lo; }
+function lowerBoundT(a, x) { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m].t < x) lo = m + 1; else hi = m; } return lo; }
+function nearestIdx(ts, t, maxDist) {
+  const i = lowerBound(ts, t); let best = -1, bd = Infinity;
+  for (const j of [i - 1, i]) if (j >= 0 && j < ts.length && Math.abs(ts[j] - t) < bd) { bd = Math.abs(ts[j] - t); best = j; }
+  return bd <= maxDist ? best : -1;
+}
+
+// ============================================================ domain constants
+const GEO_RATIO = 6378.137 / 42164.17;  // Earth radius / GEO orbit radius
+const PHASE_OF = { TRACKSAT: 'track', ACQTOTRK: 'acq', WAITIDCHECK: 'acq', CONSCANSEARCH: 'acq',
+                   SEARCH0: 'search', SEARCH1A: 'search', REACQ: 'search', TRKSATLOST: 'lost' };
+const phaseOf = s => !s ? 'other' : PHASE_OF[s] || (/^SEARCH/.test(s) ? 'search' : 'other');
+const PHASE_NAME = { track: 'tracking', acq: 'acquiring', search: 'searching', lost: 'satellite lost', other: 'other' };
+const PHASE_COLOR = { track: 'good', acq: 'warn', search: 'serious', lost: 'crit', other: 'axis' };
+const PHASE_LVL = { track: 'good', acq: 'info', search: 'warn', lost: 'bad', other: 'info' };
+const STATE_LVL = { Tracking: 'good', Sleeping: 'good', Searching: 'warn' };
+const DECODER = { QDVB: 'DVB-S', LQPSK: 'DVB-S2 QPSK', L8PSK: 'DVB-S2 8PSK' };
+const HIGH_RATE = new Set(['pos', 'bst', 'rf_agc', 'gprmc', 'avg', 'saved_pos', 'gyro_bias', 'gyro_residue', 'drift',
+                           'azoffset', 'status', 'rf_i']);
+const CAP = { ticks: 200000, agc: 100000, raw: 60000, events: 4000, markers: 3000 };
+const EV_GROUPS = [['track', 'Search/track'], ['state', 'State/lock'], ['rf', 'RF board'], ['cmd', 'Commands'], ['sys', 'System']];
+
+// ============================================================ model
+function newModel() {
+  return {
+    session: null, hello: null, link: { link: 'starting', text: '' }, ready: false, offline: false,
+    lastSeq: -1, t0: null, t1: null, lastRx: null,
+    pos: null, bst: null, agc: null, agcOff: false, rmc: null, gpsReply: null, volts: {}, temp: null, hours: null,
+    status: null, version: null, hw: null, state: null, stateSince: null, subSince: null,
+    sel: null, freq: null, satcfg: new Map(), lnb: null, antlnb: null, installed: null, settings: {},
+    antcfg: new Map(), satsetup: new Map(), satck: {}, look: {}, lnbCheck: null, selftests: {}, systemId: null,
+    search: {}, sleepLimits: null, boresight: null, savedPos: null, azoffset: null, gyro: null, residue: null,
+    drift: null, trackBias: null, parts: {},
+    ticks: { t: [], az: [], el: [], skew: [], rf: [], snr: [], sub: [], bstAz: [], bstEl: [], bst3: [] },
+    agcS: { t: [], v: [] },
+    stateChanges: [], markers: [], events: [], raw: [], unparsed: 0,
+  };
+}
+let M = newModel();
+let pendRaw = [], pendEv = [];
+const isLive = () => M.hello && M.hello.mode === 'live';
+const nowT = () => isLive() ? Date.now() / 1000 : (M.t1 ?? Date.now() / 1000);
+const ago = t => isNum(t) ? `${fmtClock(t)} (${fmtDur(nowT() - t)} ago)` : '—';
+
+function ev(t, lvl, grp, text, marker) {
+  const e = { t, lvl, grp, text };
+  M.events.push(e); pendEv.push(e);
+  if (marker) M.markers.push({ t, label: marker, text });
+}
+
+const H = {
+  pos(r, t) {
+    const T = M.ticks, prev = M.pos;
+    T.t.push(t); T.az.push(r.az); T.el.push(r.el); T.skew.push(r.skew); T.rf.push(r.rf); T.snr.push(r.snr);
+    T.sub.push(r.substate || ''); T.bstAz.push(NaN); T.bstEl.push(NaN); T.bst3.push(NaN);
+    M.pos = r;
+    if (!prev || prev.substate !== r.substate) {
+      if (prev) ev(t, PHASE_LVL[phaseOf(r.substate)], 'state', `Substate ${prev.substate} → ${r.substate}`);
+      M.subSince = t;
+    }
+    if (prev && (r.snr > 0) !== (prev.snr > 0)) {
+      if (r.snr > 0) ev(t, 'good', 'state', `Demod lock acquired · SNR ${fmt(r.snr, 2)} dB · RF ${r.rf}`, 'Lock');
+      else ev(t, 'bad', 'state', `Demod lock lost · SNR 0.00 · RF ${r.rf}`, 'Unlock');
+    }
+  },
+  bst(r, t) {
+    M.bst = r;
+    const T = M.ticks, n = T.t.length;
+    if (n && Number.isNaN(T.bstAz[n - 1]) && t - T.t[n - 1] < 3) {
+      T.bstAz[n - 1] = r.az; T.bstEl[n - 1] = r.el; T.bst3[n - 1] = isNum(r.third) ? r.third : NaN;
+    }
+  },
+  rf_agc(r, t) { M.agc = r; M.agcS.t.push(t); M.agcS.v.push(r.agc); },
+  gprmc(r, t) { M.rmc = r; if (!r.cs_ok) ev(t, 'warn', 'sys', 'NMEA checksum mismatch: ' + r.raw); },
+  nmea(r, t) { if (!r.cs_ok) ev(t, 'warn', 'sys', 'NMEA checksum mismatch: ' + r.raw); },
+  voltage(r, t) {
+    const prev = M.volts[r.idx], spec = railSpec(r.rail);
+    M.volts[r.idx] = r;
+    if (spec && (r.value < spec.lo || r.value > spec.hi)) ev(t, 'warn', 'sys', `${r.rail} at ${fmt(r.value, 1)} V, outside ${spec.text}`);
+    if (r.lnb_pol && prev && prev.lnb_pol !== r.lnb_pol) ev(t, 'info', 'sys', `LNB supply now ${fmt(r.value, 1)} V (${r.lnb_pol})`);
+  },
+  state(r, t) {
+    if (r.reply) ev(t, 'cmd', 'cmd', 'Reply: state ' + r.state);
+    if (M.state !== r.state) {
+      ev(t, STATE_LVL[r.state] || 'info', 'state', `State ${M.state ? M.state + ' → ' : ''}${r.state}`);
+      M.state = r.state; M.stateSince = t; M.stateChanges.push({ t, state: r.state });
+    }
+  },
+  status(r, t) {
+    const was = M.status && M.status.ok;
+    M.status = r;
+    if (r.ok === false && was !== false) ev(t, 'bad', 'sys', 'Status words non-zero: ' + r.words.join(' '));
+    if (r.ok && was === false) ev(t, 'good', 'sys', 'Status words back to zero');
+  },
+  temp(r) { M.temp = r; },
+  hours(r) { M.hours = r; },
+  azoffset(r) { M.azoffset = r; },
+  saved_pos(r) { M.savedPos = r; },
+  gyro_bias(r) { if (r.which === 'New') M.gyro = r; },
+  gyro_residue(r) { M.residue = r; },
+  track_bias(r) { M.trackBias = r; },
+  drift(r) { M.drift = r; },
+  rf_flag(r, t) {
+    const txt = { AGCON: 'AGC reporting on', AGCOFF: 'AGC reporting off', SDON: 'signal detect on', SDOFF: 'signal detect off',
+                  LOCKRESET: 'lock reset', CHECKID: 'network ID check' }[r.flag] || r.flag;
+    if (r.flag === 'AGCOFF') M.agcOff = true;
+    if (r.flag === 'AGCON') M.agcOff = false;
+    ev(t, r.flag === 'LOCKRESET' ? 'warn' : 'info', 'rf', 'RF: ' + txt);
+  },
+  rf_power(r, t) { ev(t, 'info', 'rf', `RF: power at detection ${fmtInt(r.power)}`); },
+  rf_normalize(r, t) {
+    ev(t, r.hw_lock ? 'good' : 'warn', 'rf', 'RF: normalize ~ ' + r.reason + (r.sd_lock ? ' (signal detect only, often a sidelobe)' : ''),
+       r.hw_lock ? 'HW lock' : r.sd_lock ? 'SD lock' : null);
+  },
+  rf_freq(r, t) {
+    M.freq = r;
+    ev(t, 'info', 'rf', `Transponder ${r.sat} ${r.freq} MHz ${r.pol}/${r.band} · ${fmtInt(r.sr)} ksym/s ${r.fec} ${r.decoder} · NID ${r.nid}`);
+  },
+  rf_satinstall(r, t) { M.installed = r.sats || [r.sat]; ev(t, 'info', 'rf', 'RF: satellites installed ' + M.installed.join(', ')); },
+  rf_satconfig(r, t) {
+    M.satcfg.set(r.sat + '#' + r.slot, r);
+    ev(t, 'info', 'rf', `SATCONFIG ${r.sat} slot ${r.slot}: ${r.freq} MHz ${r.pol}/${r.band} · ${fmtInt(r.sr)} ${r.fec} ${r.decoder} · NID ${r.nid}`);
+  },
+  rf_lnb(r, t) { M.lnb = r; ev(t, 'info', 'rf', `RF: LNB ${r.switching} · LO ${r.lo ?? r.lo_text}`); },
+  rf_select(r, t) { M.sel = { sat: r.sat, pol: r.pol, band: r.band, t }; ev(t, 'info', 'rf', `RF board set to ${r.sat} ${r.pol}/${r.band}`); },
+  rf_id(r, t) { ev(t, 'info', 'rf', `RF: ${r.text} ${r.id}` + (M.freq ? ` (satellite ID ${M.freq.nid})` : '')); },
+  rf_other(r, t) { ev(t, 'info', 'rf', 'RF: ' + r.text); },
+  mode(r, t) {
+    let lvl = 'info', mark = null, text = r.text;
+    if (r.search_mode != null) {
+      M.search.mode = r.search_mode; M.search.modeName = r.search_mode_name; M.search.modeT = t;
+      lvl = 'warn'; mark = 'Search ' + r.search_mode; text += ` (${r.search_mode_name})`;
+    } else if (/Track Sat Lost/i.test(r.text)) { lvl = 'bad'; mark = 'Lost'; }
+    else if (r.sat) { lvl = 'good'; mark = 'Tracking'; }
+    ev(t, lvl, 'track', text, mark);
+  },
+  search_target(r, t) { M.search.threshold = r.threshold; M.search.target = r.sat; ev(t, 'info', 'track', `Searching for ${r.sat}, threshold ${r.threshold}`); },
+  search_setup(r, t) { ev(t, 'info', 'track', `Search moves set up: AZ ${fmt(r.az, 2)} EL ${fmt(r.el, 2)}`); },
+  search_moves_done(r, t) { ev(t, 'info', 'track', `Search moves complete: AZ ${fmt(r.az, 2)} EL ${fmt(r.el, 2)} skew ${fmt(r.skew, 2)}`); },
+  search_start(r, t) { M.search.start = r; ev(t, 'warn', 'track', `Search started at AZ ${fmt(r.az, 2)} EL ${fmt(r.el, 2)} (RF ${r.rf})`); },
+  search_bound(r, t) { ev(t, 'info', 'track', `Search start/end AZ ${fmt(r.az, 2)} EL ${fmt(r.el, 2)}`); },
+  sat_found(r, t) {
+    M.search.found = r;
+    const g = geometry();
+    let text = `Satellite found at AZ ${fmt(r.az, 1)} EL ${fmt(r.el, 1)} (RF ${r.rf})`, lvl = 'good';
+    if (g && r.el > g.elMax) { text += ` — above the GEO arc (${fmt(g.elMax, 1)}°), so a sidelobe or false detect`; lvl = 'warn'; }
+    ev(t, lvl, 'track', text, 'Found');
+  },
+  transition(r, t) {
+    const wake = /^sleep$/i.test(r.from_mode);
+    ev(t, wake ? 'warn' : 'info', 'track', `${r.from_mode} → ${r.to_mode}: ${r.reason}`, wake ? 'Wake' : null);
+  },
+  boresight(r, t) { M.boresight = r; ev(t, 'info', 'track', `Boresight AZ ${fmt(r.az, 2)} EL ${fmt(r.el, 2)}`); },
+  sleep_limits(r, t) { M.sleepLimits = r; ev(t, 'info', 'track', `Sleep SNR wake limits ${fmt(r.lo_db, 2)} / ${fmt(r.hi_db, 2)} dB`); },
+  note(r, t) { ev(t, 'info', 'track', 'Sleep: ' + r.text); },
+  azel_dist(r, t) { ev(t, 'info', 'track', `AZ/EL distance ${fmt(r.az, 2)} / ${fmt(r.el, 2)}`); },
+  echo(r, t) { ev(t, 'cmd', 'cmd', 'TV-Hub received ' + r.cmd); },
+  tx(r, t) { ev(t, 'cmd', 'cmd', 'Sent ' + r.cmd); },
+  local_echo(r, t) { ev(t, 'cmd', 'cmd', 'Typed in the capture: ' + r.cmd); },
+  reply(r, t) { ev(t, 'cmd', 'cmd', 'Reply: ' + r.text); },
+  sat_sel(r, t) {
+    if (r.pol) M.sel = { sat: r.sat, pol: r.pol, band: r.band, t };
+    ev(t, 'cmd', 'cmd', `Satellite ${r.sat}` + (r.pol ? ` ${r.pol}/${r.band}` : ''), r.pol ? `${r.pol}/${r.band}` : null);
+  },
+  satinstall(r, t) { M.installed = r.sats || [r.sat]; ev(t, 'cmd', 'cmd', 'Installed satellites: ' + M.installed.join(', ')); },
+  gps_reply(r, t) { M.gpsReply = r; ev(t, 'cmd', 'cmd', `GPS ${fmtLat(r.lat)} ${fmtLon(r.lon)} · fix ${r.fix}`); },
+  unknown_cmd(r, t) { ev(t, 'warn', 'cmd', 'Unknown command: ' + r.cmd); },
+  antlnb(r, t) { M.antlnb = r; ev(t, 'cmd', 'cmd', `LNB ${r.model} · ${r.switching || ''} · LO ${r.lo ?? '?'}`); },
+  hw_version(r, t) { M.hw = r.version; ev(t, 'cmd', 'cmd', 'Hardware version ' + r.version); },
+  setting(r, t) { M.settings[r.name] = r; ev(t, 'cmd', 'cmd', `${r.name} = ${r.value}`); },
+  version(r, t) {
+    M.version = r;
+    ev(t, 'info', 'sys', r.model ? `KVH ${r.model} rev ${r.rev} · SW ${r.version} · S/N ${r.serial} · ${r.system_id}` : r.text);
+  },
+  banner(r, t) { ev(t, 'info', 'sys', 'TV-Hub maintenance port connection'); },
+  power_test(r, t) {
+    M.selftests['Power ' + railShort(r.rail)] = r.result;
+    ev(t, r.result === 'OK' ? 'info' : 'bad', 'sys', `Power test ${r.rail}: ${r.result} (${fmt(r.value, 1)} V)`);
+  },
+  limit_switch(r, t) { M.selftests['Limit switch'] = r.result; ev(t, r.result === 'PASS' ? 'info' : 'bad', 'sys', 'Limit switch test: ' + r.result); },
+  selftest(r, t) { M.selftests[r.name] = r.result; ev(t, r.result === 'PASS' ? 'info' : 'bad', 'sys', `Self-test ${r.name}: ${r.result}`); },
+  restart(r, t) { ev(t, 'bad', 'sys', 'Antenna restarting (ZAP)', 'Restart'); },
+  lnb_check(r, t) {
+    M.lnbCheck = r;
+    ev(t, r.ok ? 'good' : 'warn', 'sys', `LNB voltage check: expected ${fmt(r.expected, 1)} V, actual ${fmt(r.actual, 1)} V`);
+  },
+  satsetup(r, t) {
+    M.satsetup.set(r.sat, r);
+    ev(t, r.skew_offset ? 'warn' : 'cmd', 'cmd', `Satellite ${r.sat} set up at ${fmtLon(r.lon)}` +
+       (r.skew_offset ? `, skew offset ${fmt(r.skew_offset, 1)}°` : ''));
+  },
+  satconfig(r) { if (r.slot === 99) M.satck[r.sat] = r.checksum; else M.antcfg.set(r.sat + '#' + r.slot, r); },
+  satck(r) { M.satck[r.sat] = r.checksum; },
+  sat_error(r, t) { ev(t, 'warn', 'cmd', 'SAT: ' + r.text); },
+  look_angles(r) { M.look[r.sat] = r; },
+  system_id(r) { M.systemId = r; },
+  boot_note(r, t) { ev(t, 'info', 'sys', r.text); },
+  install_note(r, t) { ev(t, 'info', 'cmd', 'Install: ' + r.text); },
+  ee_write(r, t) { ev(t, 'info', 'sys', `EEPROM page ${r.page} written (${r.sat})`); },
+  ee_status(r, t) { ev(t, 'info', 'sys', 'EE status ' + r.text); },
+  part_version(r, t) { M.parts[r.name] = r; ev(t, 'info', 'sys', `${r.name} rev ${r.rev} v${r.version} (${r.part})`); },
+  bridge(r, t) {
+    const bad = /fail|disconnect|refused|closed/i.test(r.text), good = /^connected/i.test(r.text);
+    ev(t, bad ? 'warn' : good ? 'good' : 'info', 'sys', 'Bridge: ' + r.text);
+  },
+  unparsed() { M.unparsed++; },
+};
+
+function ingest(r) {
+  if (r.seq != null) { if (r.seq <= M.lastSeq) return; M.lastSeq = r.seq; }
+  const t = r.t;
+  M.raw.push(r); pendRaw.push(r);
+  if (M.t0 == null || t < M.t0) M.t0 = t;
+  if (M.t1 == null || t > M.t1) M.t1 = t;
+  if (r.src === 'rx') M.lastRx = t;
+  const h = H[r.kind];
+  if (h) h(r, t);
+}
+
+function trimModel() {
+  const T = M.ticks;
+  if (T.t.length > CAP.ticks * 1.1) { const k = T.t.length - CAP.ticks; for (const key in T) T[key].splice(0, k); }
+  if (M.agcS.t.length > CAP.agc * 1.1) { const k = M.agcS.t.length - CAP.agc; M.agcS.t.splice(0, k); M.agcS.v.splice(0, k); }
+  if (M.markers.length > CAP.markers * 1.1) M.markers.splice(0, M.markers.length - CAP.markers);
+  if (M.stateChanges.length > 6000) M.stateChanges.splice(0, M.stateChanges.length - 5000);
+  if (M.raw.length > CAP.raw * 1.1) { M.raw.splice(0, M.raw.length - CAP.raw); rebuildRawView(); }
+  if (M.events.length > CAP.events * 1.1) { M.events.splice(0, M.events.length - CAP.events); rebuildEvView(); }
+}
+
+// ============================================================ geometry
+function railSpec(rail) { return /\b42\b/.test(rail) ? { lo: 37.8, hi: 46.2, text: '37.8–46.2 V (TV-Hub spec)' } : null; }
+function railNominal(rail) {
+  if (/LNB/.test(rail)) return '13 = V, 18 = H';
+  const m = /\b(\d+)\b/.exec(rail);
+  return m ? '≈' + m[1] : '';
+}
+function railShort(rail) {  // "ANT 42 VDC" -> "42 V", "ANT LNB VDC" -> "LNB"
+  const s = rail.replace(/^ANT\s+/, '').replace(/\s*VDC$/, '');
+  return /^\d+$/.test(s) ? s + ' V' : s;
+}
+function siteLatLon() {
+  if (M.rmc && M.rmc.status === 'A' && isNum(M.rmc.lat) && isNum(M.rmc.lon)) return [M.rmc.lat, M.rmc.lon];
+  if (M.gpsReply && isNum(M.gpsReply.lat) && isNum(M.gpsReply.lon)) return [M.gpsReply.lat, M.gpsReply.lon];
+  return null;
+}
+function satLon(name) {  // [longitude, where it came from]; SATSETUP beats a name like "166EN"
+  const s = name && M.satsetup.get(name);
+  if (s && isNum(s.lon)) return [s.lon, 'SATSETUP'];
+  const m = /^(\d{1,3}(?:\.\d+)?)([EW])/i.exec(name || '');
+  if (!m) return [null, null];
+  const v = parseFloat(m[1]);
+  return [m[2].toUpperCase() === 'W' ? -v : v, 'its name'];
+}
+function lookAngles(lat, lon, satLonDeg) {  // true azimuth, elevation and polarization skew to a GEO slot
+  const rad = Math.PI / 180, la = lat * rad, dl = (satLonDeg - lon) * rad, c = Math.cos(la) * Math.cos(dl);
+  return {
+    el: Math.atan((c - GEO_RATIO) / Math.sqrt(1 - c * c)) / rad,
+    az: (Math.atan2(Math.sin(dl), -Math.sin(la) * Math.cos(dl)) / rad + 360) % 360,
+    skew: Math.atan(Math.sin(dl) / Math.tan(la)) / rad,
+  };
+}
+function geometry() {
+  const site = siteLatLon();
+  if (!site) return null;
+  const [lat, lon] = site, la = lat * Math.PI / 180;
+  const g = { lat, lon, elMax: Math.atan((Math.cos(la) - GEO_RATIO) / Math.abs(Math.sin(la))) * 180 / Math.PI };
+  g.sat = (M.pos && M.pos.sat) || (M.freq && M.freq.sat) || (M.sel && M.sel.sat) || null;
+  [g.satLon, g.satLonSrc] = satLon(g.sat);
+  if (g.satLon != null) Object.assign(g, lookAngles(lat, lon, g.satLon));
+  return g;
+}
+
+// ============================================================ colours
+const C = {};
+const CVARS = { surface: '--surface', ink: '--ink', ink2: '--ink-2', ink3: '--ink-3', grid: '--grid', axis: '--axis',
+                s1: '--s1', s2: '--s2', good: '--good', warn: '--warn', serious: '--serious', crit: '--crit', band: '--band' };
+function readColors() {
+  const cs = getComputedStyle(document.documentElement);
+  for (const [k, v] of Object.entries(CVARS)) C[k] = cs.getPropertyValue(v).trim();
+}
+function inkOn(hex) {  // label colour for text set inside a coloured fill
+  const n = parseInt(hex.replace('#', ''), 16);
+  const lin = c => { c /= 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+  const L = 0.2126 * lin(n >> 16 & 255) + 0.7152 * lin(n >> 8 & 255) + 0.0722 * lin(n & 255);
+  return L > 0.18 ? '#0b0b0b' : '#ffffff';
+}
+
+// ============================================================ chart
+const FONT = '11px system-ui, -apple-system, "Segoe UI", sans-serif';
+const FONT_B = '600 12px system-ui, -apple-system, "Segoe UI", sans-serif';
+const PANEL_H = 84, GUT_L = 58, GUT_R = 14;
+const TSTEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
+const PANELS = [
+  { id: 'snr', title: 'SNR', unit: ' dB', dec: 2, floor0: true, minSpan: 4, series: [{ key: 'snr', name: 'SNR', color: 's1' }],
+    refs: () => M.sleepLimits ? [{ v: M.sleepLimits.lo_db, label: 'sleep wake lo' }, { v: M.sleepLimits.hi_db, label: 'sleep wake hi' }] : [] },
+  { id: 'rf', title: 'RF metric', unit: '', dec: 0, floor0: true, minSpan: 1000, series: [{ key: 'rf', name: 'RF', color: 's1' }],
+    refs: () => M.search.threshold != null ? [{ v: M.search.threshold, label: 'search threshold' }] : [] },
+  { id: 'agc', title: 'AGC', unit: '', dec: 0, minSpan: 200, series: [{ agc: true, name: 'AGC', color: 's1' }] },
+  { id: 'el', title: 'Elevation', unit: '°', dec: 1, minSpan: 2,
+    series: [{ key: 'el', name: 'POS', color: 's1' }, { key: 'bstEl', name: 'BST', color: 's2' }],
+    refs: () => { const g = geometry(), out = [];
+      if (g && isNum(g.el)) out.push({ v: g.el, label: 'expected' });
+      if (g && isNum(g.elMax)) out.push({ v: g.elMax, label: 'highest GEO elevation' });
+      return out; } },
+  { id: 'az', title: 'Azimuth, dome frame', unit: '°', dec: 1, minSpan: 2, wrap: true,
+    series: [{ key: 'az', name: 'POS', color: 's1' }, { key: 'bstAz', name: 'BST', color: 's2' }] },
+  { id: 'skew', title: 'Skew', unit: '°', dec: 1, minSpan: 2, off: true, series: [{ key: 'skew', name: 'Skew', color: 's1' }],
+    refs: () => { const g = geometry(); return g && isNum(g.skew) ? [{ v: g.skew, label: 'expected' }] : []; } },
+  { id: 'bst3', title: 'BST third value (meaning unknown)', unit: '', dec: 1, minSpan: 2, off: true,
+    series: [{ key: 'bst3', name: 'BST 3rd', color: 's1' }] },
+];
+const panelOn = Object.fromEntries(PANELS.map(p => [p.id, !p.off]));
+Object.assign(panelOn, store.get('panels', {}));
+const view = { span: 900, follow: true, t0: null, t1: null };
+const RANGES = [['5 min', 300], ['15 min', 900], ['1 h', 3600], ['6 h', 21600], ['All', null]];
+const CH = { cv: $('#chart'), wrap: $('#chartWrap'), tip: $('#tip'), w: 0, lay: null, t0: 0, t1: 1, hover: null, drag: null };
+CH.ctx = CH.cv.getContext('2d');
+
+let dtCache = { n: -1, med: 3.5 };
+function typicalDt() {
+  const T = M.ticks.t, n = T.length;
+  if (n < 3) return 3.5;
+  if (Math.abs(n - dtCache.n) < 20) return dtCache.med;
+  const d = [];
+  for (let i = Math.max(1, n - 60); i < n; i++) d.push(T[i] - T[i - 1]);
+  d.sort((a, b) => a - b);
+  dtCache = { n, med: Math.max(0.5, d[d.length >> 1]) };
+  return dtCache.med;
+}
+const gapSeconds = () => Math.max(30, 6 * typicalDt());
+
+function layout(w) {
+  const lay = { x0: GUT_L, x1: Math.max(GUT_L + 60, w - GUT_R), panels: [] };
+  let y = 0;
+  lay.lane = { y, h: 18 }; y += 18;
+  for (const p of PANELS) {
+    if (!panelOn[p.id]) continue;
+    y += 6; const head = { y, h: 16 }; y += 16; const plot = { y, h: PANEL_H }; y += PANEL_H;
+    lay.panels.push({ p, head, plot });
+  }
+  y += 12; lay.band1 = { y, h: 16 }; y += 20; lay.band2 = { y, h: 16 }; y += 16;
+  lay.axis = { y: y + 4 }; y += 26;
+  lay.h = y; lay.top = lay.lane.y + 14; lay.bottom = lay.band2.y + lay.band2.h;
+  return lay;
+}
+
+function ensureSize() {
+  const w = Math.max(300, Math.floor(CH.wrap.clientWidth));
+  CH.w = w; CH.lay = layout(w);
+  const dpr = window.devicePixelRatio || 1, h = CH.lay.h;
+  if (CH.cv.width !== Math.round(w * dpr) || CH.cv.height !== Math.round(h * dpr)) {
+    CH.cv.width = Math.round(w * dpr); CH.cv.height = Math.round(h * dpr);
+    CH.cv.style.height = h + 'px';
+  }
+  CH.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function viewRange() {
+  const T = M.ticks.t, A = M.agcS.t;
+  const dMin = Math.min(T.length ? T[0] : Infinity, A.length ? A[0] : Infinity);
+  const dMax = Math.max(T.length ? T[T.length - 1] : -Infinity, A.length ? A[A.length - 1] : -Infinity);
+  if (!Number.isFinite(dMin)) return null;
+  if (!view.follow && view.t0 != null) return [view.t0, view.t1];
+  const end = isLive() ? Math.max(dMax, Date.now() / 1000) : dMax;
+  let start = view.span == null ? dMin : end - view.span;
+  if (end - start < 60) start = end - 60;
+  return [start, end];
+}
+
+function niceStep(range, count) {
+  const raw = range / count, mag = 10 ** Math.floor(Math.log10(raw)), n = raw / mag;
+  return (n < 1.5 ? 1 : n < 3 ? 2 : n < 7 ? 5 : 10) * mag;
+}
+function tickLabel(v, step) {
+  const d = step >= 1 ? 0 : step >= 0.1 ? 1 : 2;
+  return Math.abs(v) >= 10000 ? (v < 0 ? '−' : '') + Math.abs(v).toLocaleString('en-US', { maximumFractionDigits: d }) : fmt(v, d);
+}
+
+function phaseRuns(i0, i1, gap, dt) {
+  const T = M.ticks, runs = [];
+  let cur = null;
+  for (let i = i0; i <= i1; i++) {
+    const t = T.t[i], sub = T.sub[i], next = i + 1 < T.t.length ? T.t[i + 1] : null;
+    const end = next !== null && next - t <= gap ? next : t + dt;
+    if (cur && cur.sub === sub && cur.t1 === t) cur.t1 = end;
+    else { cur = { sub, ph: phaseOf(sub), t0: t, t1: end }; runs.push(cur); }
+  }
+  return runs;
+}
+
+function strokeSeries(ctx, ts, vs, j0, j1, xOf, yOf, gap, wrap, tf) {
+  // Min/max per pixel column keeps dense data honest without drawing every point.
+  ctx.beginPath();
+  let pen = false, prevT = null, prevV = null, bx = null, bF = 0, bMin = 0, bMax = 0, bL = 0;
+  const emit = () => {
+    if (bx === null) return;
+    if (!pen) { ctx.moveTo(bx, yOf(bF)); pen = true; } else ctx.lineTo(bx, yOf(bF));
+    if (bMin !== bMax) { ctx.lineTo(bx, yOf(bMin)); ctx.lineTo(bx, yOf(bMax)); }
+    ctx.lineTo(bx, yOf(bL));
+    bx = null;
+  };
+  for (let j = j0; j <= j1; j++) {
+    const t = ts[j];
+    let v = vs[j];
+    if (!isNum(v)) { emit(); pen = false; prevT = null; continue; }
+    if (tf) v = tf(v);
+    if (prevT !== null && (t - prevT > gap || (wrap && Math.abs(v - prevV) > 180))) { emit(); pen = false; }
+    const x = Math.round(xOf(t));
+    if (x !== bx) { emit(); bx = x; bF = bMin = bMax = bL = v; }
+    else { if (v < bMin) bMin = v; if (v > bMax) bMax = v; bL = v; }
+    prevT = t; prevV = v;
+  }
+  emit();
+  ctx.stroke();
+}
+
+function seriesData(s) { return s.agc ? { ts: M.agcS.t, vs: M.agcS.v } : { ts: M.ticks.t, vs: M.ticks[s.key] }; }
+
+function drawPanel(ctx, lay, P, t0, t1, xOf, gap) {
+  const { p, head, plot } = P, x0 = lay.x0, x1 = lay.x1;
+  const ser = p.series.map(s => {
+    const d = seriesData(s), n = d.ts.length, a = lowerBound(d.ts, t0), b = lowerBound(d.ts, t1 + 1e-9) - 1;
+    return { ...s, ...d, a, b, j0: Math.max(0, a - 1), j1: Math.min(n - 1, b + 1) };
+  });
+  const last = ser.map(s => {
+    for (let j = s.b; j >= s.a; j--) if (isNum(s.vs[j])) return s.vs[j];
+    return null;
+  });
+  // Azimuth near 0/360: plot relative to the newest value so a small wobble stays continuous.
+  let tf = null;
+  if (p.wrap && last[0] != null) { const ref = last[0]; tf = v => ref + ((((v - ref) % 360) + 540) % 360) - 180; }
+  let lo = Infinity, hi = -Infinity;
+  for (const s of ser) for (let j = s.a; j <= s.b; j++) {
+    let v = s.vs[j];
+    if (!isNum(v)) continue;
+    if (tf) v = tf(v);
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  P.yOf = null; P.ser = ser; P.tf = tf;
+
+  // header: title, legend keys (2+ series), latest value in view
+  ctx.textBaseline = 'middle'; ctx.textAlign = 'left'; ctx.font = FONT_B; ctx.fillStyle = C.ink;
+  const hy = head.y + head.h / 2;
+  ctx.fillText(p.title, x0, hy);
+  let lx = x0 + ctx.measureText(p.title).width + 14;
+  ctx.font = FONT;
+  if (ser.length > 1) for (const s of ser) {
+    ctx.strokeStyle = C[s.color]; ctx.lineWidth = 2; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(lx, hy); ctx.lineTo(lx + 12, hy); ctx.stroke();
+    ctx.fillStyle = C.ink2; ctx.fillText(s.name, lx + 17, hy);
+    lx += 17 + ctx.measureText(s.name).width + 12;
+  }
+  ctx.textAlign = 'right'; ctx.fillStyle = C.ink2;
+  const vals = ser.map((s, k) => (ser.length > 1 ? s.name + ' ' : '') + (last[k] == null ? '—' : fmt(last[k], p.dec) + p.unit));
+  ctx.fillText(vals.join('  ·  '), x1, hy);
+
+  if (lo === Infinity) {
+    ctx.strokeStyle = C.axis; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x0, plot.y + plot.h + 0.5); ctx.lineTo(x1, plot.y + plot.h + 0.5); ctx.stroke();
+    ctx.textAlign = 'center'; ctx.fillStyle = C.ink3; ctx.fillText('no data in view', (x0 + x1) / 2, plot.y + plot.h / 2);
+    return;
+  }
+  const slack = Math.max(p.minSpan, hi - lo);
+  const refs = (p.refs ? p.refs() : []).filter(r => isNum(r.v) && r.v >= lo - slack && r.v <= hi + slack);
+  for (const r of refs) { lo = Math.min(lo, r.v); hi = Math.max(hi, r.v); }
+  if (p.floor0) lo = Math.min(lo, 0);
+  if (hi - lo < p.minSpan) {
+    const c = (hi + lo) / 2; lo = c - p.minSpan / 2; hi = c + p.minSpan / 2;
+    if (p.floor0 && lo < 0) { hi -= lo; lo = 0; }
+  }
+  const pad = (hi - lo) * 0.06;
+  if (!(p.floor0 && lo === 0)) lo -= pad;
+  hi += pad;
+  const step = niceStep(hi - lo, 3);
+  lo = Math.floor(lo / step) * step; hi = Math.ceil(hi / step) * step;
+  const yOf = v => plot.y + plot.h - (v - lo) / (hi - lo) * plot.h;
+  P.yOf = yOf;
+
+  ctx.lineWidth = 1; ctx.textAlign = 'right'; ctx.fillStyle = C.ink3; ctx.font = FONT;
+  for (let k = Math.round(lo / step); k <= Math.round(hi / step); k++) {
+    const v = k * step, y = Math.round(yOf(v)) + 0.5;
+    ctx.strokeStyle = k === Math.round(lo / step) ? C.axis : C.grid;
+    ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+    ctx.fillText(tickLabel(p.wrap ? ((v % 360) + 360) % 360 : v, step), x0 - 8, y);
+  }
+  for (const r of refs) {  // thresholds and expectations: dashed, labelled at the right
+    const y = Math.round(yOf(r.v)) + 0.5;
+    ctx.save(); ctx.setLineDash([4, 3]); ctx.strokeStyle = C.ink3; ctx.globalAlpha = 0.9;
+    ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); ctx.restore();
+    const text = `${r.label} ${fmt(r.v, p.dec)}`, w = ctx.measureText(text).width, ly = y - 7 < plot.y + 6 ? y + 8 : y - 7;
+    ctx.fillStyle = C.surface; ctx.fillRect(x1 - w - 8, ly - 7, w + 6, 14);
+    ctx.fillStyle = C.ink2; ctx.textAlign = 'right'; ctx.fillText(text, x1 - 4, ly);
+  }
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x0, plot.y - 3, x1 - x0, plot.h + 6); ctx.clip();
+  ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  for (let k = ser.length - 1; k >= 0; k--) {
+    const s = ser[k];
+    ctx.strokeStyle = C[s.color];
+    strokeSeries(ctx, s.ts, s.vs, s.j0, s.j1, xOf, yOf, gap, p.wrap, tf);
+  }
+  ctx.restore();
+}
+
+function drawChart() {
+  ensureSize();
+  const ctx = CH.ctx, lay = CH.lay, T = M.ticks;
+  ctx.clearRect(0, 0, CH.w, lay.h);
+  ctx.font = FONT; ctx.textBaseline = 'middle';
+  const range = viewRange();
+  if (!range) {
+    ctx.fillStyle = C.ink3; ctx.textAlign = 'center';
+    ctx.fillText(M.ready ? 'Waiting for +POS telemetry…' : 'Loading…', CH.w / 2, lay.h / 2);
+    syncEventsHeight();
+    return;
+  }
+  const [t0, t1] = range;
+  CH.t0 = t0; CH.t1 = t1;
+  const xOf = t => lay.x0 + (t - t0) / (t1 - t0) * (lay.x1 - lay.x0);
+  CH.xOf = xOf;
+  const n = T.t.length, gap = gapSeconds(), dt = typicalDt();
+  const i0 = Math.max(0, lowerBound(T.t, t0) - 1), i1 = Math.min(n - 1, lowerBound(T.t, t1));
+  const runs = n ? phaseRuns(i0, i1, gap, dt) : [];
+  const clampX = x => Math.min(lay.x1, Math.max(lay.x0, x));
+
+  // faint wash behind every panel while searching or lost
+  ctx.save();
+  for (const run of runs) {
+    if (run.ph !== 'lost' && run.ph !== 'search') continue;
+    const xa = clampX(xOf(run.t0)), xb = clampX(xOf(run.t1));
+    if (xb <= xa) continue;
+    ctx.fillStyle = C[PHASE_COLOR[run.ph]]; ctx.globalAlpha = 0.08;
+    for (const P of lay.panels) ctx.fillRect(xa, P.plot.y, xb - xa, P.plot.h);
+  }
+  ctx.restore();
+
+  drawMarkers(ctx, lay, t0, t1, xOf);
+  for (const P of lay.panels) drawPanel(ctx, lay, P, t0, t1, xOf, gap);
+  drawBands(ctx, lay, runs, t0, t1, xOf, clampX);
+  drawAxis(ctx, lay, t0, t1, xOf);
+  drawHover(ctx, lay, xOf);
+  if (CH.drag) {
+    const a = clampX(Math.min(CH.drag.x0, CH.drag.x1)), b = clampX(Math.max(CH.drag.x0, CH.drag.x1));
+    ctx.save(); ctx.fillStyle = C.ink; ctx.globalAlpha = 0.07; ctx.fillRect(a, lay.top, b - a, lay.bottom - lay.top); ctx.restore();
+  }
+  syncEventsHeight();
+}
+
+function drawMarkers(ctx, lay, t0, t1, xOf) {
+  const ms = M.markers, a = lowerBoundT(ms, t0), b = lowerBoundT(ms, t1 + 1e-9);
+  ctx.save(); ctx.font = FONT; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  let lastEnd = -Infinity;
+  for (let k = a; k < b; k++) {
+    const m = ms[k], x = Math.round(xOf(m.t)) + 0.5;
+    ctx.strokeStyle = C.ink3; ctx.globalAlpha = 0.5; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, lay.lane.y + 12); ctx.lineTo(x, lay.bottom); ctx.stroke();
+    ctx.globalAlpha = 1;
+    const w = ctx.measureText(m.label).width;
+    if (x + 3 > lastEnd + 6 && x + 3 + w <= CH.w) {
+      ctx.fillStyle = C.ink2; ctx.fillText(m.label, x + 3, lay.lane.y + 7);
+      lastEnd = x + 3 + w;
+    }
+  }
+  ctx.restore();
+}
+
+function drawBands(ctx, lay, runs, t0, t1, xOf, clampX) {
+  const b1 = lay.band1, b2 = lay.band2;
+  ctx.font = FONT; ctx.textBaseline = 'middle'; ctx.textAlign = 'right'; ctx.fillStyle = C.ink3;
+  ctx.fillText('Substate', lay.x0 - 8, b1.y + b1.h / 2);
+  ctx.fillText('State', lay.x0 - 8, b2.y + b2.h / 2);
+  const fillRun = (xa, xb, band, color, label, labelInk) => {
+    const va = clampX(xa), vb = clampX(xb), w = vb - va;
+    if (w <= 0) return;
+    const gapPx = w > 5 ? 2 : 0;  // surface gap between touching segments
+    ctx.fillStyle = color; ctx.fillRect(va, band.y, w - gapPx, band.h);
+    const tw = ctx.measureText(label).width;
+    if (label && tw + 10 < w - gapPx) { ctx.fillStyle = labelInk; ctx.textAlign = 'left'; ctx.fillText(label, va + 5, band.y + band.h / 2 + 0.5); }
+  };
+  for (const run of runs) {
+    const color = C[PHASE_COLOR[run.ph]];
+    fillRun(xOf(run.t0), xOf(run.t1), b1, color, run.sub, inkOn(color));
+  }
+  const sc = M.stateChanges, end = isLive() ? Date.now() / 1000 : M.t1;
+  let k = Math.max(0, lowerBoundT(sc, t0) - 1);
+  for (; k < sc.length && sc[k].t <= t1; k++) {
+    const tb = k + 1 < sc.length ? sc[k + 1].t : end;
+    if (tb < t0) continue;
+    fillRun(xOf(sc[k].t), xOf(tb), b2, C.band, sc[k].state, C.ink);
+  }
+}
+
+function drawAxis(ctx, lay, t0, t1, xOf) {
+  const y = lay.axis.y, pxPer = (lay.x1 - lay.x0) / (t1 - t0);
+  ctx.strokeStyle = C.axis; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(lay.x0, y + 0.5); ctx.lineTo(lay.x1, y + 0.5); ctx.stroke();
+  const step = TSTEPS.find(s => s * pxPer >= 90) || 86400;
+  const off = UTC ? 0 : -new Date(t0 * 1000).getTimezoneOffset() * 60;
+  ctx.fillStyle = C.ink3; ctx.font = FONT; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  for (let t = Math.ceil((t0 + off) / step) * step - off; t <= t1; t += step) {
+    const x = Math.round(xOf(t)) + 0.5;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + 4); ctx.stroke();
+    const label = step < 60 ? fmtClock(t) : fmtClock(t).slice(0, 5), w = ctx.measureText(label).width;
+    ctx.fillText(label, Math.min(CH.w - w / 2 - 1, Math.max(w / 2 + 1, x)), y + 7);
+  }
+  ctx.textBaseline = 'middle';
+}
+
+function drawHover(ctx, lay, xOf) {
+  const hv = CH.hover, T = M.ticks;
+  if (!hv || hv.i == null || hv.i >= T.t.length) return;
+  const t = T.t[hv.i];
+  if (t < CH.t0 || t > CH.t1) return;
+  const x = Math.round(xOf(t)) + 0.5;
+  ctx.save(); ctx.strokeStyle = C.ink; ctx.globalAlpha = 0.4; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x, lay.top); ctx.lineTo(x, lay.bottom); ctx.stroke(); ctx.restore();
+  for (const P of lay.panels) {
+    if (!P.yOf) continue;
+    for (const s of P.ser) {
+      let v, tt = t;
+      if (s.agc) { const j = nearestIdx(M.agcS.t, t, 15); if (j < 0) continue; v = M.agcS.v[j]; tt = M.agcS.t[j]; }
+      else v = T[s.key][hv.i];
+      if (!isNum(v)) continue;
+      const px = xOf(tt), py = P.yOf(P.tf ? P.tf(v) : v);
+      if (py < P.plot.y - 3 || py > P.plot.y + P.plot.h + 3) continue;
+      ctx.beginPath(); ctx.arc(px, py, 6, 0, 2 * Math.PI); ctx.fillStyle = C.surface; ctx.fill();
+      ctx.beginPath(); ctx.arc(px, py, 4, 0, 2 * Math.PI); ctx.fillStyle = C[s.color]; ctx.fill();
+    }
+  }
+}
+
+function stateAt(t) {
+  const sc = M.stateChanges, k = lowerBoundT(sc, t + 1e-9) - 1;
+  return k >= 0 ? sc[k].state : null;
+}
+
+function showTip(i, px, py) {
+  const T = M.ticks, t = T.t[i], tip = CH.tip;
+  tip.replaceChildren(el('div', 'tip-time', fmtDateTime(t)));
+  const row = (color, value, label) => {
+    const r = el('div', 'tip-row'), key = el('span', 'key');
+    if (color) key.style.background = C[color];
+    r.append(key, el('b', null, value), el('span', 'lbl', label));
+    tip.append(r);
+  };
+  const j = nearestIdx(M.agcS.t, t, 15);
+  row(null, fmt(T.snr[i], 2) + ' dB', 'SNR');
+  row(null, fmtInt(T.rf[i]), 'RF metric');
+  row(null, j >= 0 ? fmtInt(M.agcS.v[j]) : '—', 'AGC');
+  row('s1', fmt(T.el[i], 1) + '°', 'elevation, POS');
+  row('s2', fmt(T.bstEl[i], 1) + '°', 'elevation, BST');
+  row('s1', fmt(T.az[i], 1) + '°', 'azimuth, POS');
+  row('s2', fmt(T.bstAz[i], 1) + '°', 'azimuth, BST');
+  row(null, fmt(T.skew[i], 1) + '°', 'skew');
+  row(null, fmt(T.bst3[i], 1), 'BST third value');
+  row(null, T.sub[i] || '—', 'substate, ' + PHASE_NAME[phaseOf(T.sub[i])]);
+  row(null, stateAt(t) || '—', 'state');
+  const tol = Math.max(2, 8 * (CH.t1 - CH.t0) / (CH.lay.x1 - CH.lay.x0));
+  const near = [];
+  for (let k = lowerBoundT(M.events, t - tol); k < M.events.length && M.events[k].t <= t + tol && near.length < 4; k++) near.push(M.events[k]);
+  if (near.length) {
+    const box = el('div', 'tip-ev');
+    for (const e of near) box.append(el('div', null, `${fmtClock(e.t)} ${e.text}`));
+    tip.append(box);
+  }
+  tip.hidden = false;
+  const W = CH.wrap.clientWidth, tw = tip.offsetWidth, th = tip.offsetHeight;
+  let left = px + 16;
+  if (left + tw > W) left = px - 16 - tw;
+  tip.style.left = Math.max(0, left) + 'px';
+  tip.style.top = Math.max(0, Math.min(CH.lay.h - th, py - 30)) + 'px';
+}
+function hideTip() { CH.tip.hidden = true; }
+
+function localXY(e) { const r = CH.cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+function tOfX(x) { const lay = CH.lay; return CH.t0 + (x - lay.x0) / (lay.x1 - lay.x0) * (CH.t1 - CH.t0); }
+function hoverAtX(x, y) {
+  const T = M.ticks.t;
+  if (!T.length || !CH.lay) return;
+  const t = tOfX(Math.min(CH.lay.x1, Math.max(CH.lay.x0, x)));
+  let i = lowerBound(T, t);
+  if (i >= T.length) i = T.length - 1;
+  if (i > 0 && Math.abs(T[i - 1] - t) <= Math.abs(T[i] - t)) i--;
+  if (T[i] < CH.t0 || T[i] > CH.t1) { CH.hover = null; hideTip(); mark('chart'); return; }
+  CH.hover = { i };
+  mark('chart');
+  showTip(i, CH.xOf(T[i]), y);
+}
+CH.cv.addEventListener('pointermove', e => {
+  const { x, y } = localXY(e);
+  if (CH.drag) { CH.drag.x1 = x; hideTip(); mark('chart'); return; }
+  hoverAtX(x, y);
+});
+CH.cv.addEventListener('pointerleave', () => { if (!CH.drag) { CH.hover = null; hideTip(); mark('chart'); } });
+CH.cv.addEventListener('pointerdown', e => {
+  if (e.button !== 0 || !CH.lay) return;
+  const { x } = localXY(e);
+  if (x < CH.lay.x0 || x > CH.lay.x1) return;
+  CH.drag = { x0: x, x1: x };
+  CH.cv.setPointerCapture(e.pointerId);
+});
+CH.cv.addEventListener('pointerup', e => {
+  if (!CH.drag) return;
+  const d = CH.drag; CH.drag = null;
+  if (Math.abs(d.x1 - d.x0) > 6) {
+    const a = tOfX(Math.min(d.x0, d.x1)), b = tOfX(Math.max(d.x0, d.x1));
+    Object.assign(view, { follow: false, t0: a, t1: b });
+    syncViewButtons();
+  }
+  const { x, y } = localXY(e);
+  hoverAtX(x, y);
+});
+CH.cv.addEventListener('dblclick', () => { Object.assign(view, { follow: true, t0: null, t1: null }); syncViewButtons(); mark('chart'); });
+CH.cv.addEventListener('keydown', e => {
+  const T = M.ticks.t;
+  if (!T.length) return;
+  const a = lowerBound(T, CH.t0), b = Math.max(a, lowerBound(T, CH.t1 + 1e-9) - 1);
+  let i = CH.hover ? CH.hover.i : b;
+  if (e.key === 'ArrowLeft') i -= e.shiftKey ? 10 : 1;
+  else if (e.key === 'ArrowRight') i += e.shiftKey ? 10 : 1;
+  else if (e.key === 'Home') i = a;
+  else if (e.key === 'End') i = b;
+  else if (e.key === 'Escape') { CH.hover = null; hideTip(); mark('chart'); return; }
+  else return;
+  e.preventDefault();
+  i = Math.min(b, Math.max(a, i));
+  CH.hover = { i };
+  mark('chart');
+  showTip(i, CH.xOf(T[i]), CH.lay.top + 40);
+});
+CH.cv.addEventListener('blur', () => { if (CH.hover) { CH.hover = null; hideTip(); mark('chart'); } });
+new ResizeObserver(() => mark('chart')).observe(CH.wrap);
+
+function syncEventsHeight() {
+  const wide = window.matchMedia('(min-width: 1151px)').matches, evEl = $('#events');
+  const chrome = $('#eventsCard').offsetHeight - evEl.offsetHeight;  // card padding + header
+  const target = wide ? Math.max(320, $('#chartCard').offsetHeight - chrome) : 420;
+  if (Math.abs(evEl.offsetHeight - target) > 2) { evEl.style.height = target + 'px'; evList.paint(); }
+}
+
+// ============================================================ chart controls
+function syncViewButtons() {
+  for (const b of $('#rangeBtns').children) b.setAttribute('aria-pressed', String(view.follow && String(view.span) === b.dataset.span));
+  $('#followBtn').setAttribute('aria-pressed', String(view.follow));
+  mark('chart', 'table');
+}
+for (const [label, span] of RANGES) {
+  const b = el('button', null, label);
+  b.dataset.span = String(span);
+  b.addEventListener('click', () => { Object.assign(view, { span, follow: true, t0: null, t1: null }); syncViewButtons(); });
+  $('#rangeBtns').append(b);
+}
+$('#followBtn').addEventListener('click', () => {
+  if (view.follow) { const r = viewRange(); if (r) Object.assign(view, { follow: false, t0: r[0], t1: r[1] }); }
+  else Object.assign(view, { follow: true, t0: null, t1: null });
+  syncViewButtons();
+});
+for (const p of PANELS) {
+  const b = el('button', 'chip', p.id === 'bst3' ? 'BST 3rd' : p.id === 'az' ? 'AZ' : p.id === 'el' ? 'EL' : p.title.split(',')[0]);
+  b.setAttribute('aria-pressed', String(panelOn[p.id]));
+  b.title = p.title;
+  b.addEventListener('click', () => {
+    panelOn[p.id] = !panelOn[p.id];
+    b.setAttribute('aria-pressed', String(panelOn[p.id]));
+    store.set('panels', panelOn);
+    mark('chart');
+  });
+  $('#panelChips').append(b);
+}
+$('#tableBtn').addEventListener('click', () => {
+  const on = $('#tableWrap').hidden;
+  $('#tableWrap').hidden = !on; CH.wrap.hidden = on;
+  $('#tableBtn').setAttribute('aria-pressed', String(on));
+  mark('table', 'chart');
+});
+$('#csvBtn').addEventListener('click', () => {
+  const r = viewRange();
+  if (!r) return;
+  const T = M.ticks, a = lowerBound(T.t, r[0]), b = lowerBound(T.t, r[1] + 1e-9);
+  const out = ['time_utc,az,el,skew,rf,snr,substate,bst_az,bst_el,bst_third,agc'];
+  const cell = v => isNum(v) ? v : '';
+  for (let i = a; i < b; i++) {
+    const j = nearestIdx(M.agcS.t, T.t[i], 15);
+    out.push([new Date(T.t[i] * 1000).toISOString(), T.az[i], T.el[i], T.skew[i], T.rf[i], T.snr[i], T.sub[i],
+              cell(T.bstAz[i]), cell(T.bstEl[i]), cell(T.bst3[i]), j >= 0 ? M.agcS.v[j] : ''].join(','));
+  }
+  const url = URL.createObjectURL(new Blob([out.join('\n') + '\n'], { type: 'text/csv' }));
+  const link = el('a');
+  link.href = url;
+  link.download = `tvhub-ticks-${new Date(r[0] * 1000).toISOString().slice(0, 19).replace(/[:T]/g, '')}.csv`;
+  document.body.append(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+});
+
+// ============================================================ virtual list
+class VList {
+  constructor(host, rowH, render, emptyText) {
+    this.host = host; this.rowH = rowH; this.render = render; this.items = []; this.follow = true; this.pool = [];
+    host.classList.add('vlist');
+    this.spacer = el('div'); this.win = el('div', 'win'); this.empty = el('div', 'empty', emptyText || '');
+    host.append(this.spacer, this.win, this.empty);
+    host.addEventListener('scroll', () => {
+      this.follow = host.scrollTop + host.clientHeight >= host.scrollHeight - this.rowH * 1.5;
+      if (this.onFollow) this.onFollow(this.follow);
+      this.paint();
+    }, { passive: true });
+    new ResizeObserver(() => this.paint()).observe(host);
+  }
+  set(items) { this.items = items; this.refresh(); }
+  refresh() {
+    this.spacer.style.height = this.items.length * this.rowH + 'px';
+    this.empty.hidden = this.items.length > 0;
+    if (this.follow) this.host.scrollTop = this.host.scrollHeight;
+    this.paint();
+  }
+  paint() {
+    const h = this.host.clientHeight || 400, first = Math.max(0, Math.floor(this.host.scrollTop / this.rowH) - 4);
+    const n = Math.max(0, Math.min(this.items.length - first, Math.ceil(h / this.rowH) + 8));
+    while (this.pool.length < n) { const r = el('div', 'vrow'); this.win.append(r); this.pool.push(r); }
+    this.win.style.transform = `translateY(${first * this.rowH}px)`;
+    for (let k = 0; k < this.pool.length; k++) {
+      const row = this.pool[k];
+      if (k < n) { row.hidden = false; this.render(row, this.items[first + k]); } else row.hidden = true;
+    }
+  }
+}
+
+// events
+const evGroups = Object.assign(Object.fromEntries(EV_GROUPS.map(([k]) => [k, true])), store.get('evGroups', {}));
+let evView = [];
+const evList = new VList($('#events'), 24, (row, e) => {
+  if (!row.firstChild) row.append(el('span', 'c-time'), el('span', 'dot'), el('span', 'c-text'));
+  const [a, b, c] = row.children;
+  a.textContent = fmtClock(e.t); b.className = 'dot ' + e.lvl; c.textContent = e.text;
+  row.title = `${fmtDateTime(e.t)}\n${e.text}`;
+}, 'No events yet');
+function rebuildEvView() { evView = M.events.filter(e => evGroups[e.grp]); pendEv = []; evList.set(evView); }
+for (const [k, label] of EV_GROUPS) {
+  const b = el('button', 'chip', label);
+  b.setAttribute('aria-pressed', String(evGroups[k]));
+  b.addEventListener('click', () => {
+    evGroups[k] = !evGroups[k]; b.setAttribute('aria-pressed', String(evGroups[k]));
+    store.set('evGroups', evGroups); rebuildEvView();
+  });
+  $('#evChips').append(b);
+}
+
+// raw stream
+const RAW_FILTERS = {
+  all: () => true,
+  quiet: r => !HIGH_RATE.has(r.kind),
+  unparsed: r => r.kind === 'unparsed',
+  cmd: r => r.cat === 'command' || r.cat === 'reply' || r.src !== 'rx',
+  rf: r => r.cat === 'rf',
+};
+let rawFilter = store.get('rawFilter', 'all'), rawQuery = '', rawView = [];
+if (!RAW_FILTERS[rawFilter]) rawFilter = 'all';
+$('#rawFilter').value = rawFilter;
+const rawMatch = r => RAW_FILTERS[rawFilter](r) && (!rawQuery || r.raw.toLowerCase().includes(rawQuery));
+const rawList = new VList($('#raw'), 21, (row, r) => {
+  if (!row.firstChild) row.append(el('span', 'c-time'), el('span', 'c-tag'), el('span', 'c-text'));
+  const [a, b, c] = row.children;
+  a.textContent = fmtClock(r.t, true);
+  b.textContent = r.src === 'tx' ? 'sent' : r.src === 'bridge' ? 'bridge' : r.kind;
+  c.textContent = r.raw;
+  row.className = 'vrow' + (r.kind === 'unparsed' ? ' unparsed' : '') + (r.src !== 'rx' ? ' src-' + r.src : '');
+}, 'No lines yet');
+rawList.onFollow = f => { $('#rawFollow').checked = f; };
+function rebuildRawView() { rawView = M.raw.filter(rawMatch); pendRaw = []; rawList.set(rawView); }
+$('#rawFilter').addEventListener('change', e => { rawFilter = e.target.value; store.set('rawFilter', rawFilter); rebuildRawView(); });
+$('#rawSearch').addEventListener('input', e => { rawQuery = e.target.value.trim().toLowerCase(); rebuildRawView(); });
+$('#rawFollow').addEventListener('change', e => { rawList.follow = e.target.checked; rawList.refresh(); });
+
+// ticks table (the chart's table view)
+const TICK_COLS = ['Time', 'SNR', 'RF', 'AGC', 'EL POS', 'EL BST', 'AZ POS', 'AZ BST', 'Skew', 'BST 3rd', 'Substate'];
+for (const c of TICK_COLS) $('#ticksHead').append(el('span', null, c));
+const ticksList = new VList($('#ticksList'), 22, (row, i) => {
+  const T = M.ticks;
+  if (!row.firstChild) { row.classList.add('ticks-row'); for (let k = 0; k < TICK_COLS.length; k++) row.append(el('span')); }
+  if (T.t[i] == null) return;
+  const j = nearestIdx(M.agcS.t, T.t[i], 15);
+  const vals = [fmtClock(T.t[i]), fmt(T.snr[i], 2), fmtInt(T.rf[i]), j >= 0 ? fmtInt(M.agcS.v[j]) : '—', fmt(T.el[i], 1),
+                fmt(T.bstEl[i], 1), fmt(T.az[i], 1), fmt(T.bstAz[i], 1), fmt(T.skew[i], 1), fmt(T.bst3[i], 1), T.sub[i] || '—'];
+  vals.forEach((v, k) => { row.children[k].textContent = v; });
+}, 'No ticks in view');
+ticksList.follow = false;
+function refreshTable() {
+  const r = viewRange(), T = M.ticks.t, items = [];
+  if (r) for (let i = lowerBound(T, r[1] + 1e-9) - 1; i >= 0 && T[i] >= r[0]; i--) items.push(i);
+  ticksList.set(items);
+}
+
+// ============================================================ tiles and cards
+const TILE_DEFS = [['snr', 'SNR'], ['rf', 'RF metric'], ['agc', 'AGC'], ['state', 'State'], ['sat', 'Satellite'],
+                   ['point', 'Pointing EL / AZ'], ['lnb', 'LNB supply'], ['temp', 'Antenna temperature']];
+const tiles = {};
+for (const [id, label] of TILE_DEFS) {
+  const t = el('div', 'tile');
+  t.append(el('div', 'label', label), el('div', 'value', '—'), el('div', 'sub'));
+  $('#tiles').append(t);
+  tiles[id] = t;
+}
+function dotLabel(lvl, text) { const s = el('span', 'status'); s.append(el('span', 'dot ' + lvl), document.createTextNode(text)); return s; }
+function setTile(id, value, sub) {
+  const t = tiles[id];
+  t.children[1].textContent = value;
+  const s = t.children[2];
+  if (sub instanceof Node) s.replaceChildren(sub); else s.textContent = sub || '';
+  s.title = s.textContent;
+}
+function lnbReading() { return Object.values(M.volts).find(v => v.lnb_pol) || null; }
+
+function renderTiles() {
+  const p = M.pos, now = nowT(), sel = M.sel, f = M.freq;
+  setTile('snr', p ? fmt(p.snr, 2) + ' dB' : '—',
+    p ? dotLabel(p.snr > 0 ? 'good' : 'bad', p.snr > 0 ? 'Demod locked' : 'No demod lock') : 'waiting for +POS');
+  setTile('rf', p ? fmtInt(p.rf) : '—', p ? (p.rf <= 520 ? '≈500 is the no-lock floor' : 'rescaled at each lock') : '');
+  let agcSub = 'waiting for RF: AGC';
+  if (M.agc) {
+    const bits = [], age = now - M.agc.t;
+    if (M.agcOff) bits.push('reporting off');
+    if (M.agc.agc < 60300) bits.push('near the ≈60,000 floor');
+    bits.push(age < 15 ? 'just now' : fmtDurShort(age) + ' ago');
+    agcSub = bits.join(' · ');
+  }
+  setTile('agc', M.agc ? fmtInt(M.agc.agc) : '—', agcSub);
+  const ph = phaseOf(p && p.substate);
+  setTile('state', M.state || '—',
+    p ? dotLabel(PHASE_COLOR[ph] === 'crit' ? 'bad' : PHASE_COLOR[ph] === 'axis' ? 'info' : PHASE_COLOR[ph],
+                 `${p.substate} · ${fmtDurShort(now - M.subSince)}`) : '');
+  let satSub = f ? `${f.freq} MHz · ${f.decoder}` : 'no RF: FREQ line yet';
+  if (f && sel && (f.pol !== sel.pol || f.band !== sel.band)) satSub = `last lock was ${f.pol}/${f.band} ${f.freq} MHz`;
+  setTile('sat', ((p && p.sat) || (sel && sel.sat) || '—') + (sel ? ` ${sel.pol}/${sel.band}` : ''), satSub);
+  setTile('point', p ? `${fmt(p.el, 1)}° / ${fmt(p.az, 1)}°` : '—',
+    p ? `skew ${fmt(p.skew, 1)}°` + (M.bst ? ` · BST ${fmt(M.bst.el, 1)}°` : '') : '');
+  const lv = lnbReading();
+  let lnbSub;
+  if (!lv) lnbSub = 'reported every ~5 min';
+  else if (sel && lv.t >= sel.t) lnbSub = lv.lnb_pol === sel.pol ? dotLabel('good', `matches commanded ${sel.pol}`)
+                                                                 : dotLabel('bad', `commanded ${sel.pol}, supply says ${lv.lnb_pol}`);
+  else if (sel) lnbSub = `read ${fmtDur(now - lv.t)} ago, before the switch to ${sel.pol}`;
+  else lnbSub = `read ${fmtDur(now - lv.t)} ago`;
+  setTile('lnb', lv ? `${fmt(lv.value, 1)} V` + (lv.lnb_pol === 'off' ? ' (off)' : ` = ${lv.lnb_pol}`) : '—', lnbSub);
+  const v42 = Object.values(M.volts).find(v => railSpec(v.rail));
+  const st = M.status;
+  setTile('temp', M.temp ? fmt(M.temp.temp, 1) + ' °C' : '—',
+    st ? dotLabel(st.ok ? 'good' : 'bad', (st.ok ? 'status OK' : 'status bits set') + (v42 ? ` · 42V ${fmt(v42.value, 1)}` : ''))
+       : v42 ? `42 V rail ${fmt(v42.value, 1)} V` : '');
+}
+
+function kv(rows) {
+  const dl = el('dl', 'kv');
+  for (const [k, v] of rows) {
+    if (v == null || v === '') continue;
+    const dd = el('dd');
+    if (v instanceof Node) dd.append(v); else dd.textContent = v;
+    dl.append(el('dt', null, k), dd);
+  }
+  return dl;
+}
+function section(title, ...nodes) { const s = el('div', 'sec'); s.append(el('h3', null, title), ...nodes.filter(Boolean)); return s; }
+const note = text => el('p', 'note', text);
+const empty = text => el('p', 'empty-note', text);
+function table(headers, rows, rowClasses, wrapCols) {
+  const wrap = el('div', 'table-scroll'), t = el('table', 't'), thead = el('tr');
+  for (const h of headers) thead.append(el('th', null, h));
+  t.append(thead);
+  rows.forEach((r, k) => {
+    const tr = el('tr', rowClasses && rowClasses[k] || null);
+    r.forEach((c, j) => {
+      const td = el('td', wrapCols && wrapCols.includes(j) ? 'wrap' : null);
+      if (c instanceof Node) td.append(c); else td.textContent = c;
+      tr.append(td);
+    });
+    t.append(tr);
+  });
+  wrap.append(t);
+  return wrap;
+}
+
+function renderSatCard() {
+  const f = M.freq, sel = M.sel, out = [];
+  out.push(f ? section('Current transponder (RF: FREQ)', kv([
+    ['Satellite', f.sat],
+    ['Downlink', `${f.freq} MHz · ${f.pol}/${f.band}`],
+    ['IF', isNum(f.lo) ? `${f.freq - f.lo} MHz (LO ${f.lo})` : null],
+    ['Symbol rate', `${fmtInt(f.sr)} ksym/s`],
+    ['FEC · decoder', `${f.fec} · ${f.decoder}` + (DECODER[f.decoder] ? ` (${DECODER[f.decoder]})` : '')],
+    ['Network ID', f.nid + (/^0XFFFE$/i.test(f.nid) ? ' (wildcard, ID check ignored)' : '')],
+    ['Reported', ago(f.t)],
+  ])) : section('Current transponder', empty('No RF: FREQ line yet. The RF board prints one after each network ID check.')));
+  out.push(section('Commanded pol/band', sel ? kv([['Selection', `${sel.sat} ${sel.pol}/${sel.band}`], ['Since', ago(sel.t)]])
+                                             : empty('No +SAT or +RF: S line yet.')));
+  // RF: SATCONFIG is what the RF board holds; +SATCONFIG is the antenna's copy sent at install.
+  const keys = [...new Set([...M.satcfg.keys(), ...M.antcfg.keys()])];
+  const CFG_FIELDS = ['freq', 'sr', 'fec', 'nid', 'pol', 'band', 'decoder'];
+  const cfg = keys.map(k => {
+    const rf = M.satcfg.get(k), an = M.antcfg.get(k);
+    let check = rf ? 'RF only' : 'antenna only';
+    if (rf && an) check = CFG_FIELDS.every(f => String(rf[f]).toUpperCase() === String(an[f]).toUpperCase())
+      ? 'same' : dotLabel('bad', 'differs');
+    return { c: rf || an, check };
+  }).sort((a, b) => a.c.sat.localeCompare(b.c.sat) || a.c.slot - b.c.slot);
+  if (cfg.length) {
+    const both = M.antcfg.size > 0;
+    out.push(section('SATCONFIG slots',
+      table(['Sat', 'Slot', 'Pol/band', 'MHz', 'ksym/s', 'FEC', 'Decoder', ...(both ? ['RF vs antenna'] : [])],
+            cfg.map(({ c, check }) => [c.sat, String(c.slot), `${c.pol}/${c.band}`, String(c.freq), String(c.sr), c.fec, c.decoder,
+                                       ...(both ? [check] : [])]),
+            cfg.map(({ c }) => sel && c.sat === sel.sat && c.pol === sel.pol && c.band === sel.band ? 'hl' : '')),
+      note((sel ? 'Bold row: the slot for the commanded pol/band. ' : '') +
+           (both ? 'RF vs antenna compares the RF board\'s copy with the one the antenna sent at install.' : ''))));
+  } else {
+    out.push(section('SATCONFIG slots', empty('Not seen yet. The RF board prints these only at satellite install or antenna boot, so restart the antenna while this is connected to capture them.')));
+  }
+  const lnbRows = [['Model', M.antlnb && M.antlnb.model], ['Switching', (M.lnb && M.lnb.switching) || (M.antlnb && M.antlnb.switching)],
+                   ['LO', (M.lnb && M.lnb.lo) != null ? M.lnb.lo + ' MHz' : M.antlnb && M.antlnb.lo != null ? M.antlnb.lo + ' MHz' : null]];
+  if (lnbRows.some(r => r[1] != null)) out.push(section('LNB', kv(lnbRows)));
+  $('#satBody').replaceChildren(...out);
+}
+
+function renderSearchCard() {
+  const S = M.search, g = geometry(), p = M.pos, out = [];
+  let found = null;
+  if (S.found) {
+    found = `AZ ${fmt(S.found.az, 1)} EL ${fmt(S.found.el, 1)} RF ${S.found.rf} · ${ago(S.found.t)}`;
+    if (g && S.found.el > g.elMax) found = dotLabel('warn', found + ' · above the GEO arc');
+  }
+  out.push(section('Search and tracking', kv([
+    ['Detection threshold', S.threshold != null ? `${S.threshold}` + (S.target ? ` (searching for ${S.target})` : '') : 'not seen yet'],
+    ['Last search mode', S.mode != null ? `${S.mode} (${S.modeName}) · ${ago(S.modeT)}` : null],
+    ['Last search start', S.start ? `AZ ${fmt(S.start.az, 2)} EL ${fmt(S.start.el, 2)} · ${ago(S.start.t)}` : null],
+    ['Last found', found],
+    ['Sleep wake limits', M.sleepLimits ? `SNR ${fmt(M.sleepLimits.lo_db, 2)} / ${fmt(M.sleepLimits.hi_db, 2)} dB` : null],
+    ['Boresight', M.boresight ? `AZ ${fmt(M.boresight.az, 2)} EL ${fmt(M.boresight.el, 2)}` : null],
+    ['Saved sat position', M.savedPos ? `AZ ${fmt(M.savedPos.az, 2)} EL ${fmt(M.savedPos.el, 2)}` : null],
+    ['AZ offset', M.azoffset ? `${fmt(M.azoffset.offset, 2)} ${M.azoffset.flag || ''}` : null],
+  ])));
+  if (g) {
+    let domeOff = null;
+    if (p && isNum(g.az)) { domeOff = ((p.az - g.az) % 360 + 540) % 360 - 180; }
+    out.push(section('Geometry', kv([
+      ['Site (GPS)', `${fmtLat(g.lat)} ${fmtLon(g.lon)}`],
+      ['Satellite', g.sat ? g.sat + (g.satLon != null ? ` at ${fmt(Math.abs(g.satLon), 2)}° ${g.satLon < 0 ? 'W' : 'E'} (from ${g.satLonSrc})`
+                                                     : ' (longitude unknown until a SATSETUP line)') : null],
+      ['Expected true AZ / EL', isNum(g.el) ? `${fmt(g.az, 1)}° / ${fmt(g.el, 1)}°` : null],
+      ['Expected skew', isNum(g.skew) ? `${fmt(g.skew, 1)}°` + (p ? ` (antenna ${fmt(p.skew, 1)}°)` : '') : null],
+      ['Measured EL', p ? `POS ${fmt(p.el, 1)}°` + (M.bst ? ` · BST ${fmt(M.bst.el, 1)}°` : '') : null],
+      ['Dome AZ − true AZ', domeOff != null ? `${fmt(domeOff, 1)}° (no heading input)` : null],
+      ['Highest GEO elevation', `${fmt(g.elMax, 1)}°`],
+    ]), note('A detection above the highest GEO elevation cannot be a satellite: it is a sidelobe or false detect.')));
+  } else {
+    out.push(section('Geometry', empty('Needs a valid GPS fix ($GPRMC status A).')));
+  }
+  const sats = [...new Set([...(M.installed || []), ...M.satsetup.keys(), ...Object.keys(M.look)])];
+  if (sats.length) {
+    const rows = sats.map(name => {
+      const s = M.satsetup.get(name), a = M.look[name], [slon] = satLon(name);
+      const calc = g && slon != null ? lookAngles(g.lat, g.lon, slon) : null;
+      const off = s && isNum(s.skew_offset) && s.skew_offset !== 0;
+      return [name, slon != null ? fmt(slon, 2) : '—',
+              s && isNum(s.skew_offset) ? (off ? dotLabel('warn', fmt(s.skew_offset, 1)) : fmt(s.skew_offset, 1)) : '—',
+              a ? `${fmt(a.az, 1)} / ${fmt(a.el, 1)} / ${fmt(a.skew, 1)}` : '—',
+              calc ? `${fmt(calc.az, 1)} / ${fmt(calc.el, 1)} / ${fmt(calc.skew, 1)}` : '—'];
+    });
+    out.push(section('Installed satellites', table(['Sat', 'Lon °E', 'Skew offset', 'Antenna AZ/EL/skew', 'Computed'], rows),
+      note('Antenna values are its own +GPS look angles (true AZ, skew includes the offset); Computed is from the GPS fix. Both print only at boot or install.')));
+  }
+  const st = Object.values(M.settings);
+  if (st.length) out.push(section('Settings (query replies)', kv(st.map(s => [s.name, s.value]))));
+  $('#searchBody').replaceChildren(...out);
+}
+
+function renderHealthCard() {
+  const out = [], idxs = Object.keys(M.volts).map(Number).sort((a, b) => a - b);
+  if (idxs.length) {
+    const rows = [];
+    for (const i of idxs) {
+      const v = M.volts[i], spec = railSpec(v.rail), bad = spec && (v.value < spec.lo || v.value > spec.hi);
+      const volts = fmt(v.value, 1) + (v.lnb_pol ? (v.lnb_pol === 'off' ? ' (off)' : ` = ${v.lnb_pol}`) : '');
+      rows.push([railShort(v.rail), bad ? dotLabel('bad', volts) : volts, spec ? '37.8–46.2 spec' : railNominal(v.rail), fmtClock(v.t)]);
+    }
+    out.push(section('Supply rails (+VOLTAGE)', table(['Rail', 'Volts', 'Expected', 'Updated'], rows, null, [2]),
+                     note('Each rail reports about every 5 minutes. The 42 V rail sags under motor load (TV-Hub spec 37.8–46.2 V).')));
+  } else {
+    out.push(section('Supply rails', empty('No +VOLTAGE lines yet. Each rail reports about every 5 minutes.')));
+  }
+  const st = M.status, v = M.version;
+  out.push(section('Antenna', kv([
+    ['Temperature', M.temp ? `${fmt(M.temp.temp, 1)} °C · ${fmtClock(M.temp.t)}` : null],
+    ['Status words', st ? dotLabel(st.ok ? 'good' : 'bad', st.ok ? 'all zero, no faults' : st.words.join(' ')) : null],
+    ['Operational hours', M.hours ? M.hours.hours.toLocaleString('en-US', { minimumFractionDigits: 1 }) : null],
+    ['Model', v ? (v.model ? `KVH ${v.model} rev ${v.rev}` : v.text) : null],
+    ['Software', v && v.version ? v.version : null],
+    ['Serial · system ID', v && v.serial ? `${v.serial} · ${v.system_id}` : null],
+    ['Hardware version', M.hw],
+    ['System ID', M.systemId ? `${M.systemId.sysid} (${M.systemId.name})` : null],
+    ['Boot self-tests', Object.keys(M.selftests).length
+      ? dotLabel(Object.values(M.selftests).every(v => v === 'OK' || v === 'PASS') ? 'good' : 'bad',
+                 Object.entries(M.selftests).map(([k, v]) => `${k} ${v}`).join(' · ')) : null],
+    ['LNB voltage check', M.lnbCheck ? dotLabel(M.lnbCheck.ok ? 'good' : 'warn',
+      `expected ${fmt(M.lnbCheck.expected, 1)} V, actual ${fmt(M.lnbCheck.actual, 1)} V · ${fmtClock(M.lnbCheck.t)}`) : null],
+    ...Object.values(M.parts).map(pv => [pv.name, `rev ${pv.rev} v${pv.version} (${pv.part})` + (pv.rest ? ' ' + pv.rest : '')]),
+    ['Gyro bias (new)', M.gyro ? `AZ ${fmt(M.gyro.az, 2)} EL ${fmt(M.gyro.el, 2)}` : null],
+    ['Drift', M.drift ? `OR ${M.drift.drift.toExponential(2)} · AZ ${M.drift.az_corr.toExponential(2)} · EL ${M.drift.el_corr.toExponential(2)}` : null],
+  ])));
+  const r = M.rmc;
+  if (r) {
+    const rows = [
+      ['Fix', dotLabel(r.status === 'A' ? 'good' : 'warn', (r.status === 'A' ? 'valid' : 'not valid') + ` (status ${r.status}, mode ${r.mode || '—'})`)],
+      ['Position', `${fmtLat(r.lat)} ${fmtLon(r.lon)}`],
+      ['GPS time', isNum(r.utc) ? new Date(r.utc * 1000).toISOString().replace('T', ' ').slice(0, 19) + ' UTC' : null],
+    ];
+    if (isLive() && isNum(r.utc)) rows.push(['PC clock − GPS', `${(r.t - r.utc) >= 0 ? '+' : '−'}${Math.abs(r.t - r.utc).toFixed(1)} s (includes reporting delay)`]);
+    out.push(section('GPS ($GPRMC every 15 s)', kv(rows)));
+  }
+  $('#healthBody').replaceChildren(...out);
+}
+
+// ============================================================ commands
+const POL_BTNS = [['H', 'L', 'H · low'], ['V', 'L', 'V · low'], ['H', 'H', 'H · high'], ['V', 'H', 'V · high']];
+const cmdUI = { polBtns: [], queryBtns: [], result: null, input: null, send: null };
+function setCmdResult(lvl, text) { if (cmdUI.result) cmdUI.result.replaceChildren(dotLabel(lvl, text)); }
+async function sendCommand(cmd, confirmText) {
+  if (confirmText && !window.confirm(confirmText)) return;
+  setCmdResult('info', `Sending ${cmd}…`);
+  try {
+    const res = await fetch('/api/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cmd }) });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(j.error || 'HTTP ' + res.status);
+    setCmdResult('good', `Sent ${j.sent}. The reply will appear in Events.`);
+  } catch (e) {
+    setCmdResult('bad', `Not sent: ${e.message}`);
+  }
+}
+function polConfirm(cmd, pol, band) {
+  return `Send ${cmd}?\n\nThis switches the antenna to ${pol === 'H' ? 'horizontal' : 'vertical'} polarization, ` +
+         `${band === 'L' ? 'low' : 'high'} band, right now. It may lose lock and start searching.`;
+}
+function buildCommands() {
+  const h = M.hello, body = $('#cmdBody');
+  cmdUI.polBtns = []; cmdUI.queryBtns = []; cmdUI.result = null;
+  body.replaceChildren();
+  if (!h) return;
+  if (h.mode !== 'live') {
+    $('#cmdMode').textContent = 'replay';
+    body.append(empty('Commands are off while replaying a log. Run tvhub_server.py without --replay to talk to the TV-Hub.'));
+    return;
+  }
+  $('#cmdMode').textContent = h.commands ? 'allowlisted' : 'read-only';
+  if (!h.commands) body.append(empty('The bridge was started with --read-only, so it will not send anything.'));
+  else {
+    const polHead = el('h3');
+    const polRow = el('div', 'btnrow');
+    for (const [pol, band, label] of POL_BTNS) {
+      const b = el('button', 'btn', label);
+      b.addEventListener('click', () => {
+        const sat = M.pos && M.pos.sat;
+        if (!sat) return;
+        const cmd = `SAT,${sat},${pol},${band}`;
+        sendCommand(cmd, polConfirm(cmd, pol, band));
+      });
+      b.dataset.pol = pol; b.dataset.band = band;
+      polRow.append(b); cmdUI.polBtns.push(b);
+    }
+    cmdUI.polHead = polHead;
+    const qRow = el('div', 'btnrow');
+    for (const q of h.queries) {
+      const b = el('button', 'btn', q);
+      b.addEventListener('click', () => sendCommand(q));
+      qRow.append(b); cmdUI.queryBtns.push(b);
+    }
+    const form = el('form'); form.id = 'cmdForm';
+    const input = el('input'); input.type = 'text'; input.placeholder = 'e.g. STATE or SAT,166EN,H,L';
+    input.autocomplete = 'off'; input.spellcheck = false; input.setAttribute('aria-label', 'Command');
+    const send = el('button', 'btn', 'Send'); send.type = 'submit';
+    form.append(input, send);
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      const cmd = input.value.trim();
+      if (!cmd) return;
+      const m = /^SAT,([^,]+),([HV]),([LH])$/i.exec(cmd);
+      sendCommand(cmd, m ? polConfirm(cmd.toUpperCase(), m[2].toUpperCase(), m[3].toUpperCase()) : null);
+    });
+    cmdUI.input = input; cmdUI.send = send;
+    cmdUI.result = el('div'); cmdUI.result.id = 'cmdResult';
+    const s1 = el('div', 'sec'); s1.append(polHead, polRow);
+    const s2 = el('div', 'sec'); s2.append(el('h3', null, 'Queries (read-only)'), qRow, form, cmdUI.result);
+    body.append(s1, s2, note('The bridge sends only these queries and SAT,<sat>,<H|V>,<L|H> for a satellite seen in the telemetry. It refuses everything else, and never sends anything on its own.'));
+  }
+  const rc = el('button', 'btn', 'Reconnect to TV-Hub');
+  rc.style.marginTop = '10px';
+  rc.addEventListener('click', async () => {
+    try { await fetch('/api/reconnect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); } catch { /* shown via status */ }
+  });
+  body.append(rc);
+  updateCommandState();
+}
+function updateCommandState() {
+  const connected = M.link && M.link.link === 'connected' && !M.offline;
+  const sat = M.pos && M.pos.sat, sel = M.sel;
+  if (cmdUI.polHead) cmdUI.polHead.textContent = `Polarization and band${sat ? ' for ' + sat : ''}`;
+  for (const b of cmdUI.polBtns) {
+    b.disabled = !connected || !sat;
+    b.setAttribute('aria-pressed', String(!!sel && sel.sat === sat && sel.pol === b.dataset.pol && sel.band === b.dataset.band));
+  }
+  for (const b of cmdUI.queryBtns) b.disabled = !connected;
+  if (cmdUI.send) { cmdUI.send.disabled = !connected; cmdUI.input.disabled = !connected; }
+}
+
+// ============================================================ header
+function renderHeader() {
+  const h = M.hello, s = M.link || {};
+  let lvl, text;
+  if (M.offline) { lvl = 'bad'; text = 'Bridge offline: is tvhub_server.py running?'; }
+  else if (!h) { lvl = 'info'; text = 'Connecting to bridge…'; }
+  else if (h.mode === 'replay') { lvl = 'info'; text = 'Replay · ' + (s.text || h.file); }
+  else if (s.link === 'connected') { lvl = 'good'; text = `Live · ${h.host}:${h.port}` + (h.read_only ? ' · read-only' : ''); }
+  else if (s.link === 'connecting' || s.link === 'starting') { lvl = 'warn'; text = s.text || 'Connecting…'; }
+  else { lvl = 'bad'; text = 'Disconnected · ' + (s.text || ''); }
+  $('#link .dot').className = 'dot ' + lvl;
+  $('#link .txt').textContent = text;
+  $('#link').title = text;
+  const age = $('#age');
+  if (h && h.mode === 'live' && M.lastRx != null && !M.offline) {
+    const a = Date.now() / 1000 - M.lastRx;
+    age.replaceChildren(dotLabel(a > 60 ? 'bad' : a > 15 ? 'warn' : 'good', `last line ${fmtDur(a)} ago`));
+  } else if (h && h.mode === 'replay' && M.t0 != null) {
+    age.textContent = `${fmtDateTime(M.t0)} → ${fmtClock(M.t1)}`;
+  } else age.textContent = '';
+}
+
+// ============================================================ dish address
+const targetForm = $('#targetForm'), hostIn = $('#hostIn'), portIn = $('#portIn'), targetMsg = $('#targetMsg');
+function setTargetMsg(lvl, text) {
+  targetMsg.hidden = !text;
+  if (text) targetMsg.replaceChildren(dotLabel(lvl, text));
+}
+function syncTargetForm() {
+  const h = M.hello, live = !!h && h.mode === 'live';
+  for (const x of targetForm.elements) x.disabled = !live;
+  if (live) {
+    if (document.activeElement !== hostIn && document.activeElement !== portIn) { hostIn.value = h.host; portIn.value = String(h.port); }
+    targetForm.title = "IP address of the dish's TV-Hub. A new address starts a fresh session and is remembered for next time.";
+  } else if (h) {
+    hostIn.value = ''; portIn.value = ''; hostIn.placeholder = 'replaying a log';
+    targetForm.title = 'Replaying a log. Run tvhub_server.py without --replay to connect to a dish.';
+  }
+}
+targetForm.addEventListener('submit', async e => {
+  e.preventDefault();
+  const host = hostIn.value.trim(), port = Number(portIn.value.trim() || 50001);
+  if (!host) { hostIn.focus(); return; }
+  setTargetMsg('info', `Connecting to ${host}:${port}…`);
+  try {
+    const res = await fetch('/api/target', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                             body: JSON.stringify({ host, port }) });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(j.error || 'HTTP ' + res.status);
+    hostIn.blur(); portIn.blur();
+    setTargetMsg(null);  // from here the header pill shows how the connection is going
+    syncTargetForm();
+  } catch (err) {
+    setTargetMsg('bad', err.message);
+  }
+});
+for (const x of [hostIn, portIn]) x.addEventListener('input', () => setTargetMsg(null));
+
+// ============================================================ render loop
+const dirty = new Set();
+let raf = 0, lastCards = 0;
+function mark(...keys) { for (const k of keys) dirty.add(k); if (!raf) raf = requestAnimationFrame(frame); }
+function frame() {
+  raf = 0;
+  if (dirty.has('data')) {
+    trimModel();
+    if (pendEv.length) { for (const e of pendEv) if (evGroups[e.grp]) evView.push(e); pendEv = []; evList.refresh(); }
+    if (pendRaw.length) { for (const r of pendRaw) if (rawMatch(r)) rawView.push(r); pendRaw = []; rawList.refresh(); $('#rawCount').textContent = rawCountText(); }
+    dirty.add('chart').add('tiles').add('header').add('table');
+    if (performance.now() - lastCards > 1000) dirty.add('cards');
+  }
+  if (dirty.has('header')) renderHeader();
+  if (dirty.has('tiles')) renderTiles();
+  if (dirty.has('cards')) { lastCards = performance.now(); renderSatCard(); renderSearchCard(); renderHealthCard(); updateCommandState(); }
+  if (dirty.has('chart') && !CH.wrap.hidden) drawChart();
+  if (dirty.has('table') && !$('#tableWrap').hidden) refreshTable();
+  dirty.clear();
+}
+function rawCountText() {
+  const shown = rawView.length !== M.raw.length ? ` · ${rawView.length.toLocaleString('en-US')} shown` : '';
+  return `${M.raw.length.toLocaleString('en-US')} lines · ${M.unparsed} unparsed${shown}`;
+}
+function rerenderAll() { rebuildEvView(); rebuildRawView(); $('#rawCount').textContent = rawCountText(); mark('chart', 'tiles', 'cards', 'header', 'table'); }
+
+setInterval(() => {
+  mark('header', 'tiles');
+  if (isLive() && view.follow) mark('chart');
+  if (performance.now() - lastCards > 5000) mark('cards');
+}, 1000);
+
+// ============================================================ connection to the bridge
+function connect() {
+  const es = new EventSource('/api/events');
+  es.addEventListener('hello', e => {
+    const h = JSON.parse(e.data);
+    if (M.session !== h.session) {
+      M = newModel(); evView = []; rawView = []; pendEv = []; pendRaw = []; dtCache = { n: -1, med: 3.5 };
+      CH.hover = null; hideTip();
+      Object.assign(view, { span: h.mode === 'replay' ? null : 900, follow: true, t0: null, t1: null });
+      syncViewButtons(); rerenderAll();
+    }
+    M.session = h.session; M.hello = h; M.link = h.status; M.offline = false; M.ready = false;
+    buildCommands();
+    syncTargetForm();
+    mark('header', 'cards');
+  });
+  es.addEventListener('backlog', e => { for (const r of JSON.parse(e.data)) ingest(r); mark('data'); });
+  es.addEventListener('ready', () => { M.ready = true; mark('data', 'cards'); });
+  es.addEventListener('status', e => { M.link = JSON.parse(e.data); mark('header', 'cards'); });
+  es.onmessage = e => {
+    ingest(JSON.parse(e.data));
+    // Background tabs get no animation frames, so enforce the caps here as well.
+    if (M.raw.length > CAP.raw * 1.2 || M.ticks.t.length > CAP.ticks * 1.2) trimModel();
+    mark('data');
+  };
+  es.onerror = () => { M.offline = true; mark('header', 'cards'); };
+  es.onopen = () => { M.offline = false; mark('header'); };
+}
+
+// ============================================================ theme and time zone
+const THEMES = ['auto', 'light', 'dark'];
+let theme = store.get('theme', 'auto');
+function applyTheme() {
+  if (theme === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = theme;
+  $('#themeBtn').textContent = 'Theme: ' + theme;
+  readColors(); mark('chart');
+}
+$('#themeBtn').addEventListener('click', () => { theme = THEMES[(THEMES.indexOf(theme) + 1) % 3]; store.set('theme', theme); applyTheme(); });
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { readColors(); mark('chart'); });
+function syncTz() {
+  $('#tzLocal').setAttribute('aria-pressed', String(!UTC));
+  $('#tzUtc').setAttribute('aria-pressed', String(UTC));
+}
+for (const [id, utc] of [['#tzLocal', false], ['#tzUtc', true]]) {
+  $(id).addEventListener('click', () => { UTC = utc; store.set('utc', UTC); syncTz(); evList.paint(); rawList.paint(); mark('chart', 'tiles', 'cards', 'header', 'table'); });
+}
+
+applyTheme(); syncTz(); syncViewButtons(); rerenderAll();
+connect();
+})();
+</script>
+</body>
+</html>

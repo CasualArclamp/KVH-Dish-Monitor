@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+
+# per-machine state written by tvhub_server.py
+/logs/
+/tvhub_config.json
+
+# raw captures stay local (they hold the GPS position); scrubbed copies live in samples/
+/*.log
+
+/.claude/
