@@ -5,8 +5,8 @@
     python tvhub_server.py --read-only            # live, never send anything
     python tvhub_server.py --replay tvhub.log     # view a saved capture
 
-Serves tvhub_gui.html at http://127.0.0.1:8650/ and streams parsed records to it with
-Server-Sent Events. The dish (TV-Hub) address can be changed from the GUI; the last one
+Serves tvhub_gui.html at http://127.0.0.1:8650/ (with --lan: to the local network too, as
+http://kvh.local/) and streams parsed records to it with Server-Sent Events. The dish (TV-Hub) address can be changed from the GUI; the last one
 used is kept in tvhub_config.json. Live sessions are written to logs/ with arrival
 timestamps (the format --replay and tvhub_parser.py read back). Stdlib only.
 
@@ -43,6 +43,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
+import tvhub_lan as lan
 import tvhub_webservice as webservice
 from tvhub_parser import LineSplitter, format_log_line, make_record, read_log
 
@@ -742,7 +743,7 @@ class App:
                     self.web.retarget(host)
 
             self.hub.new_session(before=before, hello=self.hello, note=f"dish address set to {host}:{port}")
-            save_config(self.args.config, {"host": host, "port": port})
+            save_config(self.args.config, {**load_config(self.args.config), "host": host, "port": port})
         return host, port
 
     def reconnect(self) -> None:
@@ -761,13 +762,14 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "tvhub-bridge/1"
     app: App  # set on the per-server subclass by make_server() / main()
     allowed_hosts: set[str] | None = None
+    http_port = 0
 
     def log_request(self, code="-", size="-") -> None:
         pass
 
     def _host_ok(self) -> bool:
         # Loopback binding: only answer to loopback names (blocks DNS-rebinding pages).
-        return self.allowed_hosts is None or self.headers.get("Host", "") in self.allowed_hosts
+        return lan.host_allowed(self.headers.get("Host", ""), self.allowed_hosts, self.http_port)
 
     def _send(self, status: int, body: bytes, ctype: str) -> None:
         self.send_response(status)
@@ -878,23 +880,41 @@ class Handler(BaseHTTPRequestHandler):
             hub.unsubscribe(client)
 
 
-def _loopback_hosts(http_host: str, port: int) -> set[str] | None:
+def _is_loopback(http_host: str) -> bool:
     try:
-        loopback = ipaddress.ip_address(http_host).is_loopback
+        return ipaddress.ip_address(http_host).is_loopback
     except ValueError:
-        loopback = http_host == "localhost"
-    if not loopback:
-        return None
-    return {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
+        return http_host == "localhost"
 
 
-def make_server(app: App | None, http_host: str, http_port: int) -> ThreadingHTTPServer:
-    """Bind the GUI server (port 0 = any free port). Set .app on the handler before serving."""
+def make_server(app: App | None, http_host: str, http_port: int, hosts: set[str] | None = None) -> ThreadingHTTPServer:
+    """Bind the GUI server (port 0 = any free port). Set .app on the handler before serving.
+    Requests must name an allowed Host (this is what defeats DNS rebinding): loopback names
+    when bound to loopback, else `hosts` or this PC's own names and addresses."""
     handler = type("BoundHandler", (Handler,), {"app": app})
     httpd = ThreadingHTTPServer((http_host, http_port), handler)
     httpd.daemon_threads = True
-    handler.allowed_hosts = _loopback_hosts(http_host, httpd.server_address[1])
+    port = httpd.server_address[1]
+    handler.http_port = port
+    if _is_loopback(http_host):
+        handler.allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
+    else:
+        handler.allowed_hosts = hosts if hosts is not None else lan.allowed_hosts(port, ips=lan.local_ipv4s())
     return httpd
+
+
+def _bridge_answers(port: int) -> bool:
+    """True if a monitor bridge is already serving on this port on this PC."""
+    import http.client
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=1.5)
+        conn.request("GET", "/api/status", headers={"Host": f"127.0.0.1:{port}"})
+        resp = conn.getresponse()
+        data = json.loads(resp.read(65536) or b"{}") if resp.status == 200 else {}
+        conn.close()
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and "session" in data and "mode" in data
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -906,8 +926,13 @@ def main(argv: list[str] | None = None) -> int:
                     help="replay pacing: 0 = load instantly (default), 1 = real time, 10 = 10x")
     ap.add_argument("--read-only", action="store_true", help="never send anything to the TV-Hub")
     ap.add_argument("--eol", choices=sorted(EOLS), default="crlf", help="line ending for commands (default crlf)")
-    ap.add_argument("--http-host", default="127.0.0.1", help="GUI bind address (default %(default)s)")
-    ap.add_argument("--http-port", type=int, default=8650, help="GUI port (default %(default)s)")
+    ap.add_argument("--http-host", help="GUI bind address (default 127.0.0.1, or all interfaces with --lan)")
+    ap.add_argument("--http-port", type=int, help="GUI port (default 8650, or 80 with --lan)")
+    ap.add_argument("--lan", action="store_true",
+                    help="serve the page to other devices on the local network too, as http://<name>.local/ "
+                         "(remembered in the config file; --local turns it off again)")
+    ap.add_argument("--local", action="store_true", help="this PC only, even if the config file says --lan")
+    ap.add_argument("--name", help="the .local name announced with --lan (default kvh)")
     ap.add_argument("--log-dir", default=os.path.join(HERE, "logs"), help="where live sessions are logged")
     ap.add_argument("--no-log", action="store_true", help="don't write a session log")
     ap.add_argument("--history", type=int, default=50000,
@@ -931,17 +956,60 @@ def main(argv: list[str] | None = None) -> int:
     except RequestRefused as e:
         ap.error(str(e))
 
-    try:
-        httpd = make_server(None, args.http_host, args.http_port)
-    except OSError as e:
-        print(f"cannot listen on {args.http_host}:{args.http_port}: {e}", file=sys.stderr)
+    # --lan / --local are remembered, so a double-clicked tvhub_server.py starts the same way
+    if args.lan or args.local or args.name:
+        save_config(args.config, {**load_config(args.config), "lan": bool(args.lan or (not args.local and saved.get("lan"))),
+                                  **({"lan_name": args.name.lower()} if args.name else {})})
+        saved = load_config(args.config)
+    use_lan = not args.local and (args.lan or saved.get("lan") is True)
+    name = (args.name or saved.get("lan_name") or "kvh").lower()
+    if use_lan and not lan.valid_name(name):
+        ap.error(f"not a valid host name: {name!r} (letters, digits and hyphens)")
+    http_host = args.http_host or ("0.0.0.0" if use_lan else "127.0.0.1")
+    ports = [args.http_port] if args.http_port else ([80, 8650] if use_lan else [8650])
+    lan_ip = lan.lan_ipv4(args.host) if use_lan else None
+    ips = (lan.local_ipv4s() | ({lan_ip} if lan_ip else set())) if use_lan else set()
+
+    # Already running (a second double-click, say)? Open that one instead of starting another
+    # bridge with a second connection to the dish.
+    if not args.replay:
+        for http_port in ports:
+            if _bridge_answers(http_port):
+                shown = f"http://localhost{'' if http_port == 80 else f':{http_port}'}/"
+                print(f"The monitor is already running: opening {shown}")
+                if not args.no_browser:
+                    webbrowser.open(shown)
+                time.sleep(4)  # long enough to read in a double-clicked window
+                return 0
+
+    httpd, errors = None, []
+    for http_port in ports:
+        try:
+            hosts = lan.allowed_hosts(http_port, [name], ips) if not _is_loopback(http_host) else None
+            httpd = make_server(None, http_host, http_port, hosts)
+            break
+        except OSError as e:
+            errors.append(f"cannot listen on {http_host}:{http_port}: {e}")
+    if httpd is None:
+        print("\n".join(errors), file=sys.stderr)
         return 1
+    for err in errors:
+        print(err + " (using the next port)")
+    http_port = httpd.server_address[1]
     app = App(args)
     httpd.RequestHandlerClass.app = app
     app.start()
 
-    shown_host = "127.0.0.1" if args.http_host in ("", "0.0.0.0", "::") else args.http_host
-    url = f"http://{shown_host}:{args.http_port}/"
+    suffix = "" if http_port == 80 else f":{http_port}"
+    url = f"http://localhost{suffix}/" if use_lan else f"http://127.0.0.1:{http_port}/"
+    mdns = None
+    if use_lan and lan_ip:
+        try:
+            mdns = lan.MdnsResponder(name, lan_ip)
+            mdns.start()
+        except OSError as e:
+            print(f"could not announce {name}.local ({e}); use the addresses below instead")
+            mdns = None
     if app.mode == "live":
         print(f"TV-Hub {args.host}:{args.port} -> {url}"
               + ("  (read-only)" if args.read_only else "  (allowlisted commands enabled)"))
@@ -949,6 +1017,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"logging to {app.hub.log_path}")
     else:
         print(f"replaying {args.replay} -> {url}")
+    if use_lan:
+        pc = socket.gethostname().lower()
+        others = ([f"http://{name}.local{suffix}/"] if mdns else []) + [f"http://{pc}.local{suffix}/"] + \
+                 [f"http://{ip}{suffix}/" for ip in sorted(ips)]
+        print("on other devices: " + "  ".join(others))
+        print("anyone on this network can use the page, including its commands")
     print("Ctrl+C to stop")
     if not args.no_browser:
         threading.Timer(0.5, webbrowser.open, (url,)).start()
@@ -957,10 +1031,25 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        if mdns:
+            mdns.stop()
         app.close()
         httpd.server_close()
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        code = main()
+    except SystemExit as e:  # argument errors
+        code = e.code
+    except Exception:  # noqa: BLE001 - show it rather than let a double-clicked window vanish
+        import traceback
+        traceback.print_exc()
+        code = 1
+    if code and os.name == "nt" and sys.stdin is not None and sys.stdin.isatty():
+        try:
+            input("\nPress Enter to close this window...")
+        except (EOFError, KeyboardInterrupt):
+            pass
+    sys.exit(code)

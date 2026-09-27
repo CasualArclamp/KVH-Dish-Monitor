@@ -32,6 +32,26 @@ dropped) and is saved to `tvhub_config.json`, so the next launch reconnects ther
 `--host` on the command line overrides the saved address for one run. The default is
 192.168.50.214.
 
+### Open it from other devices
+
+```
+python tvhub_server.py --lan              # also serve the page on the local network, as http://kvh.local/
+python tvhub_server.py --lan --name dish  # announce http://dish.local/ instead
+python tvhub_server.py --local            # back to this PC only
+```
+
+`--lan` serves the page on port 80 on all network interfaces. The bridge then announces
+`kvh.local` itself with multicast DNS, so phones, tablets and other computers on the same
+network can open **http://kvh.local/**. The PC's own name (`http://<pc-name>.local/`) and
+its IP address work too. The setting is saved in `tvhub_config.json`, so a double-clicked
+`tvhub_server.py` starts the same way. On this PC, use `http://localhost/` or
+`http://kvh.localhost/`.
+
+Windows asks once whether Python may accept connections: allow it on private networks.
+Anyone on the network can then use the page, including its commands. The bridge still
+answers only requests addressed to one of its own names or addresses, which stops a web
+page on another site from reaching it through DNS rebinding.
+
 Live sessions are logged to `logs/tvhub-YYYYMMDD-HHMMSS.log` with arrival timestamps.
 Those logs, plain `ncat -o` captures, and the TV-Hub's own serial log export
 (`IPACU.serial.log`, downloadable from its web interface) all work with `--replay`:
