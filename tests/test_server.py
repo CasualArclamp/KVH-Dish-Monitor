@@ -17,9 +17,10 @@ from tvhub_server import (App, CommandRejected, RequestRefused, make_server, val
                           validate_target)
 
 SAMPLE_LOG = os.path.join(ROOT, "samples", "pol-switch.log")
-FORBIDDEN = ["ZAP", "HALT", "CLEAREE", "@CLEAREE", "=CAL", "=CALAZ", "@SAVE", "=TV", "=TVMODE",
+FORBIDDEN = ["ZAP", "SMACK", "CLEAREE", "@CLEAREE", "=CAL", "=CALAZ", "@SAVE", "=TV", "=TVMODE", "DEBUGOFF",
              "SATINSTALL,USER6I", "SATCK,166EN,F1", "SAT,166EN,V", "SAT,166EN,X,L", "SAT,166EN,V,L,X",
-             "STATE\r\nZAP", "STATE ZAP", "HELP", "THRESHOLD", "", "   "]
+             "STATE\r\nZAP", "STATE ZAP", "THRESHOLD", "SKEW", "ANTLNB,19-0864 AUST DUA", "", "   ",
+             "5", "88", "2 ", "AZ,3600", "AZ,-1", "AZ,", "AZ,60,1", "AZ,12345", "EL,149", "EL,601", "EL,57.7"]
 
 
 def wait_for(pred, timeout=5.0):
@@ -64,6 +65,9 @@ class FakeTvHub:
                 return
             self.received += data
 
+    def send_line(self, line):
+        self.conn.sendall(line.encode() + b"\r\n")
+
     def close(self):
         for s in (self.conn, self.srv):
             try:
@@ -85,8 +89,23 @@ class AllowlistTests(unittest.TestCase):
 
     def test_forbidden(self):
         for cmd in FORBIDDEN:
+            if cmd == "2 ":
+                continue  # stripped to "2", a valid step; covered by test_manual_pointing
             with self.subTest(cmd=cmd), self.assertRaises(CommandRejected):
                 validate_command(cmd, {"166EN", "USER6I"})
+
+    def test_help_queries_and_control(self):
+        for cmd in ("help", "TGTLOCATION", "siglevel", "HALT", "track", "debugon"):
+            self.assertEqual(validate_command(cmd, set()), cmd.upper())
+
+    def test_manual_pointing(self):
+        self.assertEqual(validate_command("az,60", set()), "AZ,0060")  # zero-padded like HELP's AZ,XXXX
+        self.assertEqual(validate_command("AZ,3599", set()), "AZ,3599")
+        self.assertEqual(validate_command("AZ,0", set()), "AZ,0000")
+        self.assertEqual(validate_command("EL,577", set()), "EL,577")
+        self.assertEqual(validate_command("EL,150", set()), "EL,150")
+        for step in ("2", "4", "6", "8"):
+            self.assertEqual(validate_command(step, set()), step)
 
 
 class TargetValidationTests(unittest.TestCase):
@@ -124,6 +143,22 @@ class LiveBridgeTests(unittest.TestCase):
         self.assertEqual(self.app.send_command("SAT,166EN,V,L"), "SAT,166EN,V,L")
         self.assertTrue(wait_for(lambda: self.fake.received == b"STATE\r\nSAT,166EN,V,L\r\n"),
                         repr(self.fake.received))
+
+    def test_manual_moves_need_idle(self):
+        with self.assertRaises(CommandRejected) as ctx:
+            self.app.send_command("8")  # still tracking
+        self.assertEqual(ctx.exception.status, 409)
+        self.fake.send_line("+STATE: Idle")
+        self.assertTrue(wait_for(lambda: self.app.hub.antenna_state == "Idle"))
+        self.assertEqual(self.app.send_command("az,60"), "AZ,0060")
+        time.sleep(0.55)
+        self.assertEqual(self.app.send_command("8"), "8")
+        self.fake.send_line(">STATE: Searching")
+        self.assertTrue(wait_for(lambda: self.app.hub.antenna_state == "Searching"))
+        time.sleep(0.55)
+        with self.assertRaises(CommandRejected):
+            self.app.send_command("EL,577")
+        self.assertTrue(wait_for(lambda: self.fake.received == b"AZ,0060\r\n8\r\n"), repr(self.fake.received))
 
     def test_rate_limit(self):
         self.app.send_command("STATE")
@@ -209,12 +244,22 @@ class HttpTests(unittest.TestCase):
         conn.close()
         self.assertEqual(events[0], "hello")
         self.assertEqual(len(records), 496)
+        status = json.loads(self.request("GET", "/api/status")[1])
+        self.assertIsInstance(status["api"], int)  # the GUI compares this with its own BRIDGE_API
+        self.assertFalse(status["code_changed"])
         self.assertEqual(records[1]["kind"], "pos")
 
     def test_command_refused_in_replay(self):
         resp, body = self.request("POST", "/api/command", json.dumps({"cmd": "STATE"}),
                                   {"Content-Type": "application/json"})
         self.assertEqual(resp.status, 409)
+
+    def test_satellite_switch_refused_in_replay_and_cross_site(self):
+        resp, _ = self.request("POST", "/api/satellite", json.dumps({"sat": "USER4"}), {"Content-Type": "application/json"})
+        self.assertEqual(resp.status, 409)
+        resp, _ = self.request("POST", "/api/satellite", json.dumps({"sat": "USER4"}),
+                               {"Content-Type": "application/json", "Origin": "http://evil.example"})
+        self.assertEqual(resp.status, 403)
 
     def test_target_refused_in_replay(self):
         resp, body = self.request("POST", "/api/target", json.dumps({"host": "192.168.50.214", "port": 50001}),

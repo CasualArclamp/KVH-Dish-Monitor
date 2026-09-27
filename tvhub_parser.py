@@ -37,7 +37,8 @@ from datetime import datetime, timezone
 
 _NUM = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
 _RE_NUM_GROUP = re.compile(r"\(\?P<(\w+)>" + re.escape(_NUM) + r"\)")
-_INT_FIELDS = {"rf", "threshold", "agc", "power", "slot", "freq", "sr", "lo", "idx", "search_mode", "current", "saved"}
+_INT_FIELDS = {"rf", "threshold", "agc", "power", "slot", "freq", "sr", "lo", "idx", "search_mode", "current", "saved",
+               "signal", "antenna"}
 
 
 def _n(name: str) -> str:
@@ -93,13 +94,18 @@ _SIMPLE_RULES = [
      rf"^AccelMinMax Roll\s+{_n('roll')},\s*Pitch\s+{_n('pitch')},\s*AzBiasDelta\s+{_n('az_bias_delta')}"),
     ("mtr_status", "boot",  # meaning of the fields unknown
      rf"^MTR\s+{_n('mtr')}\s+AZ\s+{_n('az')}\s+EL\s+{_n('el')}\s+SKS\s+{_n('sks')}\s+SKW\s+(?P<skw>\w+)"),
-    ("ee_write", "boot", r"^EE Page Write\s+(?P<page>\d+)\s+(?P<a>\d+)\s+(?P<b>\d+)\s+(?P<sat>\S+)"),
+    ("ee_write", "boot", r"^EE Page Write\s+(?P<page>\d+)\s+(?P<a>\d+)\s+(?P<b>\d+)(?:\s+(?P<sat>\S+))?\s*$"),
+    ("ee_locked", "reply", r"^EE Locked - Unable to write\s*$"),
+    # After the EE page writes of a satellite install; meaning of the two numbers unknown.
+    ("rf_antenna", "housekeeping", rf"^RF\s+{_n('rf')}\s+Antenna\s+{_n('antenna')}\s*$"),
     ("install_note", "reply", r"^(?P<text>INSTALL_\w+|uiSatsToInstall,\d+)\s*$"),
-    ("boot_note", "boot", r"^\+?(?P<text>(?:\w+ )?Limit Switch Test.*|Using Computed Bias.*)$"),
+    ("boot_note", "boot", r"^\+?(?P<text>(?:\w+ )?Limit Switch Test.*|Using Computed Bias.*|Waiting For Bias Trim)$"),
     ("part_version", "boot",
      r"^\+(?P<name>[A-Z]+)VER,(?P<rev>[A-Z0-9]+),(?P<version>[\d.]+),(?P<part>[\w-]+)\s*$"),
     ("part_version", "boot",
      r"^(?P<name>[A-Z]+):\s*(?P<desc>.+?)\s+REV\s+(?P<rev>\w+)\s+VER\s+(?P<version>[\d.]+)\s+SW\s+(?P<part>[\w-]+)"),
+    ("part_version", "boot",  # e.g. "TV-HUB DISEQC REV B VER 1.01 SW 04-0874"
+     r"^(?P<name>[A-Z][A-Z0-9 -]*?)\s+REV\s+(?P<rev>\w+)\s+VER\s+(?P<version>[\d.]+)\s+SW\s+(?P<part>[\w-]+)\s*$"),
     ("azoffset", "telemetry", rf"^\+?AZOFFSET,\s*{_n('offset')}\s*(?:,\s*(?P<flag>\w*))?"),
     ("search_target", "event", rf"^Searching for (?P<sat>[^,\s]+),?\s+Threshold\s*=\s*{_n('threshold')}"),
     ("search_setup", "event", rf"^SetupSearchMoves:\s*AZ\s*=\s*{_n('az')},\s*EL\s*=\s*{_n('el')}"),
@@ -128,6 +134,19 @@ _SIMPLE_RULES = [
     ("note", "event", r"^Sleep:\s*(?P<text>.*)$"),
     ("part_version", "boot",
      r"^(?P<name>.+?)\s+Rev\s+(?P<rev>[A-Z0-9]+)\s+v(?P<version>[\d.]+)\s*\((?P<part>[\w-]+)\)\s*,?\s*(?P<rest>.*)$"),
+    # HELP output (Idle mode only), e.g. "AZ,XXXX     = Command a manual azimuth angle (0-3599)".
+    # Must come before "setting": the description always starts with a capitalised word.
+    ("help_entry", "reply", r"^(?P<cmd>[A-Z0-9@=][A-Z0-9,@=]*)\s+=\s+(?P<desc>[A-Z][a-z]+\b.*)$"),
+    ("needs_mode", "reply", r"^(?P<cmd>\S+) requires (?P<mode>\w+) mode\.?\s*$"),
+    # Replies to SIGLEVEL and TGTLOCATION (one line per installed satellite, EL and AZ in
+    # tenths of a degree), and the antenna's answer to a garbled command.
+    ("siglevel", "reply", rf"^Signal Strength\s*=\s*{_n('signal')}\s*$"),
+    ("tgt_location", "reply", r"^Target Location:\s*(?P<sat>\S+)\s*=\s*E(?P<el>\d+),\s*A(?P<az>\d+)\s*$"),
+    ("malformed", "reply", r"^(?P<cmd>.+?)\s+Malformed message\s*$"),
+    # The antenna's acceptance of a manual AZ,XXXX / EL,XXX command (it echoes the padded value).
+    ("manual_ack", "reply", r"^(?P<axis>AZ|EL),(?P<tenths>\d{3,4})$"),
+    # ...and of a 0.1-degree step, as the bare digit (8/2 = EL up/down, 6/4 = AZ clockwise/counter-clockwise).
+    ("jog_ack", "reply", r"^(?P<step>[2468])$"),
     ("setting", "reply", r"^\+?(?P<name>[A-Z][A-Z0-9_]*)\s*=\s*(?P<value>.+)$"),
 ]
 _SIMPLE_RULES = [(kind, cat, re.compile(rx), frozenset(_RE_NUM_GROUP.findall(rx)))
@@ -153,10 +172,12 @@ KNOWN_COMMAND_WORDS = {
     "STATE", "SAT", "SATINSTALL", "SATCK", "GPS", "=SERNUM", "@VER", "VERSION", "HOURS",
     "SIDELOBE", "SLEEP", "ANTLNB", "SEARCHTIMEOUT", "@FPGAVER", "STATUS", "HW", "ZAP", "HALT",
     "CLEAREE", "@CLEAREE", "@SAVE", "HELP", "THRESHOLD", "THRESH", "@THRESHOLD",
+    "TRACK", "SMACK", "AZ", "EL", "TGTLOCATION", "SIGLEVEL", "DEBUGON", "DEBUGOFF", "SKEW",
 }
 _RE_LOCAL_CMD = re.compile(r"^([=@]?[A-Za-z][A-Za-z0-9]*)((?:,[^,\s]*)*)$")
 
 SEARCH_MODE_NAMES = {0: "local", 1: "full sweep", 2: "REACQ"}
+_JOG_STEPS = {"8": ("EL", 0.1), "2": ("EL", -0.1), "6": ("AZ", 0.1), "4": ("AZ", -0.1)}
 
 
 def _num(tok: str) -> float:
@@ -175,7 +196,8 @@ def _nmea_coord(value: str, hemi: str) -> float | None:
 
 
 def _parse_nmea(s: str) -> dict:
-    """s starts with '$'. Validates the checksum; decodes RMC, keeps others generic."""
+    """s starts with '$'. Checks the checksum (cs_ok is None when the sentence has none);
+    decodes RMC, keeps others generic."""
     star = s.rfind("*")
     body = s[1:star] if star >= 0 else s[1:]
     calc = 0
@@ -183,7 +205,7 @@ def _parse_nmea(s: str) -> dict:
         calc ^= ord(ch)
     given = s[star + 1:star + 3] if star >= 0 else ""
     try:
-        cs_ok = len(given) == 2 and int(given, 16) == calc
+        cs_ok = None if star < 0 else (len(given) == 2 and int(given, 16) == calc)
     except ValueError:
         cs_ok = False
     f = body.split(",")
@@ -326,9 +348,10 @@ def _parse_bst(body: str) -> dict | None:
         return None
     if len(vals) < 2:
         return None
+    # Boresight: the TV-Hub's status page names these BORESIGHT AZIMUTH / ELEVATION / TILT.
     rec = {"kind": "bst", "cat": "telemetry", "az": vals[0], "el": vals[1]}
     if len(vals) > 2:
-        rec["third"] = vals[2]  # meaning unknown (varies with pointing)
+        rec["tilt"] = vals[2]
     if len(vals) > 3:
         rec["extra"] = vals[3:]
     return rec
@@ -364,8 +387,8 @@ def parse_line(line: str) -> dict:
         rec = _parse_bst(s[5:])
         if rec:
             return rec
-    elif s.startswith("$") or s.startswith("+$"):
-        return _parse_nmea(s.lstrip("+"))
+    elif s[:1] == "$" or s[:2] in ("+$", "~$"):  # "~$": the TV-Hub's own copy, no checksum
+        return _parse_nmea(s.lstrip("+~"))
     elif s.startswith("+VOLTAGE,"):
         rec = _parse_voltage(s)
         if rec:
@@ -475,6 +498,12 @@ def parse_line(line: str) -> dict:
             rec = {"kind": kind, "cat": cat, **_convert(m.groupdict(), numeric)}
             if kind == "lnb_check":
                 rec["ok"] = abs(rec["expected"] - rec["actual"]) < 1.5
+            elif kind == "tgt_location":
+                rec["el"], rec["az"] = int(rec["el"]) / 10, int(rec["az"]) / 10
+            elif kind == "manual_ack":
+                rec["value"] = int(rec.pop("tenths")) / 10
+            elif kind == "jog_ack":
+                rec["axis"], rec["delta"] = _JOG_STEPS[rec["step"]]
             return rec
 
     m = _RE_LOCAL_CMD.match(s)
@@ -492,6 +521,19 @@ def make_record(text: str, t: float, src: str = "rx", seq: int | None = None) ->
         rec = parse_line(text)
     elif src == "tx":
         rec = {"kind": "tx", "cat": "command", "cmd": text}
+    elif src == "hub":  # a "KEY: value" line from the TV-Hub's status snapshot
+        key, sep, value = text.partition(": ")
+        rec = {"kind": "hub_info", "cat": "hub", "key": key.strip() if sep else None,
+               "value": value.strip() if sep else text.strip()}
+    elif src == "web":  # a reply from the TV-Hub's web service, as {"msg": name, "data": {...}} JSON
+        try:
+            obj = json.loads(text)
+        except ValueError:
+            obj = None
+        if isinstance(obj, dict) and isinstance(obj.get("msg"), str):
+            rec = {"kind": "hubweb", "cat": "hub", "msg": obj["msg"], "data": obj.get("data")}
+        else:
+            rec = {"kind": "unparsed", "cat": "unparsed"}
     else:
         rec = {"kind": "bridge", "cat": "bridge", "text": text}
     rec["t"] = round(t, 3)
@@ -550,10 +592,11 @@ class LineSplitter:
 # Log files
 # ---------------------------------------------------------------------------
 
-# Bridge log format: ISO-8601 local time with offset, TAB, RX|TX|--, TAB, line.
+# Bridge log format: ISO-8601 local time with offset, TAB, RX|TX|--|WB, TAB, line
+# (WB lines are the hub web service's replies as JSON; HB is only produced when reading an export).
 _RE_TS_LINE = re.compile(
-    r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?)\t(RX|TX|--)\t(.*)$")
-_TAG_TO_SRC = {"RX": "rx", "TX": "tx", "--": "bridge"}
+    r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?)\t(RX|TX|--|HB|WB)\t(.*)$")
+_TAG_TO_SRC = {"RX": "rx", "TX": "tx", "--": "bridge", "HB": "hub", "WB": "web"}  # WB: hub web service reply
 _SRC_TO_TAG = {v: k for k, v in _TAG_TO_SRC.items()}
 POS_INTERVAL_S = 3.5  # typical +POS cadence, used when a log has no GPS time at all
 
@@ -603,15 +646,67 @@ def fill_times(times: list, default_step: float = 1.0, end_hint: float | None = 
     return out
 
 
+# The TV-Hub's own serial log export (IPACU.serial.log): a KEY=VALUE config block, which holds
+# the owner's registration details and is skipped; a "LIVE DATA" status snapshot; then the
+# serial stream with each line prefixed by a UTC stamp such as "Sep 26 2026 04:25:30.173".
+_HUB_LIVE_MARK = "******** LIVE DATA ********"
+_RE_HUB_TS = re.compile(r"^([A-Z][a-z]{2}) +(\d{1,2}) (\d{4}) (\d\d):(\d\d):(\d\d)\.(\d{3,4})(?: (.*))?$")
+_MONTHS = {m: i for i, m in enumerate(
+    ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), 1)}
+
+
+def _hub_time(m: re.Match) -> float | None:
+    try:
+        base = datetime(int(m.group(3)), _MONTHS[m.group(1)], int(m.group(2)), int(m.group(4)),
+                        int(m.group(5)), int(m.group(6)), tzinfo=timezone.utc)
+    except (KeyError, ValueError):
+        return None
+    return base.timestamp() + int(m.group(7)) / 1000  # milliseconds; the hub sometimes prints 1000
+
+
+def _read_hub_export(lines: list[str]) -> list[list]:
+    marked = any(line.startswith(_HUB_LIVE_MARK) for line in lines)
+    section = "config" if marked else "serial"
+    snapshot, serial, start = [], [], None
+    for line in lines:
+        if section == "config":
+            if line.startswith(_HUB_LIVE_MARK):
+                section = "live"
+            continue
+        if section == "live":
+            if line and set(line) == {"*"}:
+                section = "serial"
+            elif line.startswith("LOG START:"):
+                start = _parse_iso(line.split(":", 1)[1].strip())
+            elif line:
+                snapshot.append(line)
+            continue
+        m = _RE_HUB_TS.match(line)
+        if m:
+            if m.group(8) and m.group(8).strip():
+                serial.append([_hub_time(m), "rx", m.group(8).rstrip()])
+        elif line:
+            serial.append([None, "rx", line])
+    if start is None:
+        start = next((e[0] for e in serial if e[0] is not None), None)
+    return [[start, "hub", line] for line in snapshot] + serial
+
+
 def read_log(path: str) -> tuple[list[tuple[float, str, str]], str]:
     """Load a capture. Returns ([(t, src, text), ...], timing) where timing says where
-    the timestamps came from: 'recorded' (bridge log), 'gps' (interpolated between
-    $GPRMC fixes) or 'estimated' (no GPS in file: POS cadence, ending at file mtime)."""
+    the timestamps came from: 'recorded' (bridge log), 'hub' (the TV-Hub's own serial log
+    export), 'gps' (interpolated between $GPRMC fixes) or 'estimated' (no GPS in the file:
+    POS cadence, ending at the file's mtime)."""
     with open(path, "rb") as fh:
         text = fh.read().decode("utf-8", errors="replace")
+    lines = [_RE_CTRL.sub("", line).rstrip() for line in text.splitlines()]
+    stamped = sum(1 for line in lines[:400] if _RE_HUB_TS.match(line))
+    if any(line.startswith(_HUB_LIVE_MARK) for line in lines[:1000]) or stamped > 0.5 * min(len(lines), 400):
+        entries = _read_hub_export(lines)
+        times = fill_times([e[0] for e in entries], end_hint=os.path.getmtime(path))
+        return [(times[i], e[1], e[2]) for i, e in enumerate(entries)], "hub"
     entries: list[list] = []
-    for line in text.splitlines():
-        line = _RE_CTRL.sub("", line).rstrip()
+    for line in lines:
         if not line:
             continue
         m = _RE_TS_LINE.match(line)
@@ -657,7 +752,8 @@ _EVENT_KINDS = {
     "mode", "search_target", "search_start", "sat_found", "transition", "boresight", "sleep_limits",
     "note", "azel_dist", "rf_normalize", "rf_freq", "rf_satconfig", "rf_satinstall", "rf_select",
     "rf_id", "rf_lnb", "echo", "tx", "local_echo", "reply", "sat_sel", "satinstall", "unknown_cmd",
-    "version", "bridge", "power_test", "limit_switch",
+    "version", "bridge", "power_test", "limit_switch", "siglevel", "tgt_location", "malformed", "ee_locked",
+    "manual_ack", "jog_ack", "needs_mode",
 }
 
 
@@ -667,7 +763,7 @@ def _fmt_t(t: float) -> str:
 
 def _cli(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Parse a TV-Hub port-50001 capture.")
-    ap.add_argument("log", help="ncat -o capture or tvhub_server.py log")
+    ap.add_argument("log", help="ncat -o capture, tvhub_server.py log, or the TV-Hub's own serial log export")
     ap.add_argument("--events", action="store_true", help="print the event timeline")
     ap.add_argument("--json", action="store_true", help="print every record as JSON lines")
     ap.add_argument("--csv", metavar="FILE", help="write +POS ticks (with the following +BST) as CSV")
@@ -684,7 +780,7 @@ def _cli(argv: list[str] | None = None) -> int:
         with open(args.csv, "w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
             w.writerow(["time", "az", "el", "skew", "rf", "snr", "sat", "substate",
-                        "bst_az", "bst_el", "bst_third"])
+                        "boresight_az", "boresight_el", "boresight_tilt"])
             row = None
             for r in records:
                 if r["kind"] == "pos":
@@ -693,7 +789,7 @@ def _cli(argv: list[str] | None = None) -> int:
                     row = [datetime.fromtimestamp(r["t"]).astimezone().isoformat(timespec="milliseconds"),
                            r["az"], r["el"], r["skew"], r["rf"], r["snr"], r["sat"], r["substate"], "", "", ""]
                 elif r["kind"] == "bst" and row and row[8] == "":
-                    row[8:11] = [r["az"], r["el"], r.get("third", "")]
+                    row[8:11] = [r["az"], r["el"], r.get("tilt", "")]
             if row:
                 w.writerow(row)
         print(f"wrote {args.csv}")
@@ -717,7 +813,7 @@ def _cli(argv: list[str] | None = None) -> int:
         print(f"\nunparsed lines ({sum(unparsed.values())}):")
         for raw, count in unparsed.most_common():
             print(f"  {count:>5}x  {raw}")
-    bad_cs = [r for r in records if r["kind"] in ("gprmc", "nmea") and not r["cs_ok"]]
+    bad_cs = [r for r in records if r["kind"] in ("gprmc", "nmea") and r["cs_ok"] is False]
     if bad_cs:
         print(f"\nNMEA checksum failures: {len(bad_cs)}")
     return 0

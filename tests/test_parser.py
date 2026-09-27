@@ -21,7 +21,7 @@ CASES = [
     ("+POS:  17.7  55.8 -22.8 3406 11.83 166EN TRACKSAT",
      dict(kind="pos", az=17.7, el=55.8, skew=-22.8, rf=3406, snr=11.83, sat="166EN", substate="TRACKSAT", lock=True)),
     ("+POS:  17.5  55.7 -22.8  826  0.00 166EN TRACKSAT", dict(kind="pos", rf=826, snr=0.0, lock=False)),
-    ("+BST:  17.5  54.8  -5.0", dict(kind="bst", az=17.5, el=54.8, third=-5.0)),
+    ("+BST:  17.5  54.8  -5.0", dict(kind="bst", az=17.5, el=54.8, tilt=-5.0)),
     ("+$GPRMC,062539.000,A,2725.0000,S,15315.0000,E,0.00,114.49,260926,,,A*79",
      dict(kind="gprmc", cs_ok=True, status="A", mode="A", lat=-27.4166667, lon=153.25, cog=114.49)),
     ("$GPRMC,063124.000,A,2725.0009,S,15315.0012,E,0.00,114.49,260926,,,D*7F", dict(kind="gprmc", cs_ok=True)),
@@ -57,6 +57,18 @@ CASES = [
     ("+RF: S,USER2,V,H,I", dict(kind="rf_select", sat="USER2", valid=False)),
     ("RF: NORMON", dict(kind="rf_flag", flag="NORMON")),
     ("RF: Sats Installed: 4", dict(kind="rf_installed", count=4)),
+    # from the TV-Hub's own serial log export
+    ("~$GPRMC,043125.000,A,2725.0000,S,15315.0000,E,0.00,114.49,260926,,,A", dict(kind="gprmc", cs_ok=None, status="A")),
+    ("TV-HUB DISEQC REV B VER 1.01 SW 04-0874", dict(kind="part_version", name="TV-HUB DISEQC", rev="B", part="04-0874")),
+    ("Waiting For Bias Trim", dict(kind="boot_note", text="Waiting For Bias Trim")),
+    # HELP (Idle mode only)
+    ("HELP requires Idle mode.", dict(kind="needs_mode", cmd="HELP", mode="Idle")),
+    ("VERSION     = Report software version", dict(kind="help_entry", cmd="VERSION", desc="Report software version")),
+    ("AZ,XXXX     = Command a manual azimuth angle (0-3599)", dict(kind="help_entry", cmd="AZ,XXXX")),
+    ("8           = Command 0.1 deg up manual elevation step", dict(kind="help_entry", cmd="8")),
+    ("TGTLOCATION = Report target location", dict(kind="help_entry", cmd="TGTLOCATION")),
+    ("HALT        = Halt acquisition/tracking, enter idle mode", dict(kind="help_entry", cmd="HALT")),
+    ("+STATE: Idle", dict(kind="state", state="Idle")),
     ("RF: LOCKRESET", dict(kind="rf_flag", flag="LOCKRESET")),
     ("RF: something new", dict(kind="rf_other", text="something new")),
     ("+*** Entering Search Mode 0 ***", dict(kind="mode", search_mode=0, search_mode_name="local")),
@@ -159,6 +171,20 @@ CASES = [
     ("At End Position AZ =  181.18, EL =   43.76", dict(kind="search_bound", az=181.18, el=43.76)),
     ("Target Position   44.70", dict(kind="search_step", target=44.70)),
     ("EL Min/Max - Discrim Off", dict(kind="note", text="EL Min/Max - Discrim Off")),
+    # manual pointing (Idle mode): the antenna echoes the padded value it accepted, SIGLEVEL is on
+    # the +POS RF scale (500 = noise floor), TGTLOCATION gives EL/AZ in tenths per installed satellite
+    ("AZ,0060", dict(kind="manual_ack", axis="AZ", value=6.0)),
+    ("EL,577", dict(kind="manual_ack", axis="EL", value=57.7)),
+    ("AZ,60", dict(kind="local_echo", cmd="AZ,60")),  # not padded: a typed command in an ncat capture
+    ("8", dict(kind="jog_ack", axis="EL", delta=0.1)),
+    ("4", dict(kind="jog_ack", axis="AZ", delta=-0.1)),
+    ("5", dict(kind="unparsed")),
+    ("Signal Strength = 0500", dict(kind="siglevel", signal=500)),
+    ("Target Location: USER4 = E570,A0071", dict(kind="tgt_location", sat="USER4", el=57.0, az=7.1)),
+    ("AZ,0060AZ,60  Malformed message", dict(kind="malformed", cmd="AZ,0060AZ,60")),
+    ("EE Page Write 1 76 58", dict(kind="ee_write", page="1")),
+    ("EE Locked - Unable to write", dict(kind="ee_locked")),
+    ("RF 1   Antenna 4", dict(kind="rf_antenna", rf=1, antenna=4)),
     ("!", dict(kind="unparsed")),
     ("Some brand new line", dict(kind="unparsed")),
 ]
@@ -247,6 +273,36 @@ class TimingTests(unittest.TestCase):
                 break
         else:
             self.fail("anchor line not found")
+
+    def test_hub_serial_export(self):
+        # Shape of the TV-Hub's IPACU.serial.log export, with made-up values.
+        content = "\n".join([
+            "", "ACU_CONF_VERSION=5", 'REG_USER_NAME="Test Person"', "REG_USER_PHONE=0000000000",
+            "******** LIVE DATA ********", "LOG START: 2026-09-26T04:25:30Z", "ACU 42V OUTPUT: 43.0",
+            "AU POWER (VDC): 40.4", "*" * 70,
+            "Sep 26 2026 04:25:30.173 +BST: 357.8  57.2  -5.1",
+            "Sep 26 2026 04:30:30.1000 +STATE: Tracking",
+            "Sep 26 2026 04:41:31.777",
+        ]) + "\n"
+        with tempfile.NamedTemporaryFile("w", suffix=".log", delete=False, encoding="utf-8") as fh:
+            fh.write(content)
+            path = fh.name
+        try:
+            entries, timing = read_log(path)
+            records, _ = load_records(path)
+        finally:
+            os.unlink(path)
+        self.assertEqual(timing, "hub")
+        self.assertFalse(any("REG_" in text for _, _, text in entries))  # registration block is skipped
+        start = datetime(2026, 9, 26, 4, 25, 30, tzinfo=timezone.utc).timestamp()
+        self.assertEqual([(src, text) for _, src, text in entries],
+                         [("hub", "ACU 42V OUTPUT: 43.0"), ("hub", "AU POWER (VDC): 40.4"),
+                          ("rx", "+BST: 357.8  57.2  -5.1"), ("rx", "+STATE: Tracking")])
+        self.assertAlmostEqual(entries[0][0], start, places=3)
+        self.assertAlmostEqual(entries[2][0], start + 0.173, places=3)
+        self.assertAlmostEqual(entries[3][0], start + 301.0, places=3)  # "30.1000" is 1000 ms
+        self.assertEqual(records[0]["kind"], "hub_info")
+        self.assertEqual((records[0]["key"], records[0]["value"]), ("ACU 42V OUTPUT", "43.0"))
 
     def test_bridge_log_round_trip(self):
         rows = [(1790000000.123, "rx", "+STATE: Tracking"), (1790000001.5, "tx", "STATE"),

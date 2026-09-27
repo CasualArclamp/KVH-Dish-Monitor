@@ -10,15 +10,23 @@ Server-Sent Events. The dish (TV-Hub) address can be changed from the GUI; the l
 used is kept in tvhub_config.json. Live sessions are written to logs/ with arrival
 timestamps (the format --replay and tvhub_parser.py read back). Stdlib only.
 
-Commands from the GUI are checked here against an explicit allowlist: the bare
-read-only queries the TV-Hub itself sends at boot, plus SAT,<sat>,<H|V>,<L|H> for a
-satellite already seen in this session's telemetry. Nothing else is ever sent, and
-nothing is ever sent on a timer - only when someone clicks.
+Commands from the GUI are checked here against an explicit allowlist:
+- read-only queries: the bare words the TV-Hub sends at boot, plus HELP, TGTLOCATION and
+  SIGLEVEL from the antenna's own HELP list
+- SAT,<sat>,<H|V>,<L|H> for a satellite already seen in this session's telemetry
+- switching to another satellite of the TV-Hub's installed group, through its web service
+  (select_satellite, install=N; see tvhub_webservice.py), only while autoswitch is off
+- HALT, TRACK and DEBUGON (the antenna refuses TRACK until DEBUGON after a reboot)
+- manual pointing (AZ,<0-3599>, EL,<150-600>, the 0.1-degree steps 2/4/6/8), accepted
+  only while the antenna reports Idle
+Nothing else is ever sent (SMACK, ZAP, CLEAREE, =CAL... are refused), and nothing is sent
+except in response to a click in the GUI.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import ipaddress
 import json
 import os
@@ -35,6 +43,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
+import tvhub_webservice as webservice
 from tvhub_parser import LineSplitter, format_log_line, make_record, read_log
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -42,11 +51,20 @@ GUI_FILE = os.path.join(HERE, "tvhub_gui.html")
 CONFIG_FILE = os.path.join(HERE, "tvhub_config.json")
 DEFAULT_HOST, DEFAULT_PORT = "192.168.50.214", 50001
 
-# Bare words the TV-Hub sends at boot (plus VERSION, seen in a capture): read-only queries.
+# Read-only queries: the bare words the TV-Hub sends at boot, VERSION (seen in a capture),
+# and the "Report ..." entries of the antenna's own HELP list.
 QUERY_COMMANDS = (
     "STATE", "SAT", "SATINSTALL", "VERSION", "GPS", "HOURS", "STATUS", "ANTLNB", "SIDELOBE",
-    "SLEEP", "SEARCHTIMEOUT", "HW", "@VER", "@FPGAVER", "=SERNUM",
+    "SLEEP", "SEARCHTIMEOUT", "HW", "@VER", "@FPGAVER", "=SERNUM", "HELP", "TGTLOCATION", "SIGLEVEL",
 )
+# HALT stops acquisition/tracking and enters Idle mode; TRACK resumes (both seen in use).
+# After a reboot the antenna answers TRACK with "TRACK requires Debug mode." until it gets
+# DEBUGON (seen in the captures; it only turns on extra diagnostic lines and is idempotent).
+CONTROL_COMMANDS = ("HALT", "TRACK", "DEBUGON")
+# Manual pointing, from HELP. Only allowed while the antenna reports Idle.
+JOG_COMMANDS = {"8": "EL +0.1°", "2": "EL −0.1°", "6": "AZ +0.1° (CW)", "4": "AZ −0.1° (CCW)"}
+_RE_MANUAL = re.compile(r"^(AZ|EL),(\d{1,4})$")
+MANUAL_LIMITS = {"AZ": (0, 3599, 4), "EL": (150, 600, 3)}  # tenths of a degree, and field width
 _RE_SAT_SET = re.compile(r"^SAT,([A-Z0-9]{1,12}),([HV]),([LH])$")
 # Records whose "sat" field names a satellite the antenna knows about.
 _SAT_KINDS = {"pos", "rf_freq", "rf_satconfig", "rf_satinstall", "rf_select", "sat_sel", "satinstall",
@@ -55,6 +73,27 @@ _RE_HOSTNAME = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-
                           r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$")
 MIN_COMMAND_INTERVAL_S = 0.5
 EOLS = {"crlf": "\r\n", "lf": "\n", "cr": "\r"}
+
+# The GUI is read from disk on every page load, so after an update it can be newer than a
+# bridge that is still running. Bump this together with BRIDGE_API in tvhub_gui.html when
+# the GUI starts relying on something new here; the page then asks for a restart.
+BRIDGE_API = 2
+_CODE_FILES = (os.path.abspath(__file__), os.path.join(HERE, "tvhub_parser.py"))
+
+
+def _code_fingerprint() -> str:
+    h = hashlib.sha1()
+    for path in _CODE_FILES:
+        try:
+            with open(path, "rb") as fh:
+                h.update(fh.read())
+        except OSError:
+            h.update(b"missing")
+    return h.hexdigest()
+
+
+CODE_FINGERPRINT = _code_fingerprint()  # the code this process is running
+STARTED = time.time()
 
 
 class RequestRefused(Exception):
@@ -72,14 +111,25 @@ class CommandRejected(RequestRefused):
 def validate_command(cmd: str, known_sats: set[str]) -> str:
     """Return the normalised command if it is on the allowlist, else raise CommandRejected."""
     c = cmd.strip().upper()
-    if c in QUERY_COMMANDS:
+    if c in QUERY_COMMANDS or c in CONTROL_COMMANDS or c in JOG_COMMANDS:
         return c
+    m = _RE_MANUAL.match(c)
+    if m:
+        lo, hi, width = MANUAL_LIMITS[m.group(1)]
+        value = int(m.group(2))
+        if not lo <= value <= hi:
+            raise CommandRejected(f"{m.group(1)} must be {lo}-{hi} (tenths of a degree)")
+        return f"{m.group(1)},{value:0{width}d}"  # zero-padded, as in HELP's AZ,XXXX / EL,XXX
     m = _RE_SAT_SET.match(c)
     if m:
         if m.group(1) not in known_sats:
             raise CommandRejected(f"satellite {m.group(1)} has not appeared in the telemetry this session")
         return c
     raise CommandRejected("not on the allowlist")
+
+
+def is_manual_move(command: str) -> bool:
+    return command in JOG_COMMANDS or command.startswith(("AZ,", "EL,"))
 
 
 def validate_target(host, port) -> tuple[str, int]:
@@ -134,6 +184,7 @@ class Hub:
         self.session = uuid.uuid4().hex[:12]
         self.status = {"link": "starting", "text": "", "since": time.time()}
         self.known_sats: set[str] = set()
+        self.antenna_state: str | None = None  # last +STATE / >STATE seen, e.g. "Idle"
         self.log_path = log_path
         self._log = open(log_path, "a", encoding="utf-8", buffering=1) if log_path else None
 
@@ -149,6 +200,8 @@ class Hub:
     def _publish_locked(self, t: float, src: str, text: str, log: bool) -> dict:
         rec = make_record(text, t, src, self._seq)
         self._seq += 1
+        if rec["kind"] == "state":
+            self.antenna_state = rec["state"]
         if rec["kind"] in _SAT_KINDS:
             for name in rec.get("sats") or [rec.get("sat")]:
                 if name:
@@ -179,6 +232,7 @@ class Hub:
                 before()
             self._backlog.clear()
             self.known_sats.clear()
+            self.antenna_state = None
             self.session = uuid.uuid4().hex[:12]
             if hello is not None:
                 self._broadcast("hello", json.dumps(hello(dict(self.status))))
@@ -276,6 +330,8 @@ class LiveSource(threading.Thread):
             except OSError as e:
                 reason = str(e) or e.__class__.__name__
             finally:
+                if gen == self._gen:
+                    self.hub.antenna_state = None  # unknown until the next STATE line: no manual moves on a stale "Idle"
                 with self._sock_lock:
                     if self._sock is sock:
                         self._sock = None
@@ -380,6 +436,186 @@ class ReplaySource(threading.Thread):
         self._stop_evt.set()
 
 
+class HubWebPoller(threading.Thread):
+    """Polls the TV-Hub's web service (read-only messages only: tvhub_webservice.READ_ONLY)
+    and publishes the replies as "web" records. One request at a time, at most one a second;
+    what is already known is republished only when it changes or every REPUBLISH_S."""
+
+    EVERY_S = {"antenna_status": 5, "power": 60, "get_event_history_count": 60, "get_antenna_config": 600,
+               "ophours": 600, "antenna_versions": 1800, "get_satellite_list": 1800, "get_autoswitch_status": 30}
+    PARAMS_EVERY_S = 900        # get_satellite_params, for the tracked satellite and each favourite
+    REPUBLISH_S = {"antenna_status": 60}  # at least this often even if unchanged
+    REPUBLISH_DEFAULT_S = 1800
+    RETRY_S = 30                # after the hub stops answering
+    GAP_S = 1.0                 # between requests
+    # antenna_status fields that change every poll; the rest decides whether it is news
+    _VOLATILE = {"snr", "bars", "bst_az", "bst_el", "bst_tilt", "az_bow", "motor_az", "motor_el", "motor_skew", "heading"}
+
+    def __init__(self, hub: Hub, host: str, port: int = webservice.WEB_PORT, fetch=webservice.fetch) -> None:
+        super().__init__(name="tvhub-web", daemon=True)
+        self.hub, self.host, self.port, self._fetch = hub, host, port, fetch
+        self._lock = threading.Lock()
+        self._stop_evt = threading.Event()
+        self._gen = 0
+        self._reset()
+
+    def _reset(self) -> None:
+        self._due = {name: 0.0 for name in self.EVERY_S}
+        self._params_due: dict[str, float] = {}
+        self._last: dict[str, tuple[str, float]] = {}  # key -> (content, monotonic time published)
+        self._events_wanted = False
+        self._event_count: int | None = None
+        self._pause_until = 0.0
+        self._failing = False
+        self._disabled: set[str] = set()
+        self._last_err: dict[str, str] = {}  # message -> last error noted, so a repeating one is noted once
+        self.group: dict | None = None  # latest get_autoswitch_status: the installed group, autoswitch on/off
+
+    def retarget(self, host: str) -> None:
+        with self._lock:
+            self.host = host
+            self._gen += 1
+            self._reset()
+
+    def stop(self) -> None:
+        self._stop_evt.set()
+
+    def installed_group(self) -> dict | None:
+        with self._lock:
+            return self.group
+
+    def refresh_soon(self) -> None:
+        """Ask for the hub's status and group again now, e.g. after a satellite change."""
+        with self._lock:
+            for name in ("antenna_status", "get_autoswitch_status"):
+                self._due[name] = 0.0
+
+    def _next_job(self, now: float):
+        if now < self._pause_until:
+            return None
+        if self._events_wanted and self._event_count:
+            return "get_recent_event_history", {"begin_at_event": 1, "how_many_events": min(self._event_count, 9999)}
+        due = [(t, name, None) for name, t in self._due.items() if t <= now and name not in self._disabled]
+        if "get_satellite_params" not in self._disabled:
+            due += [(t, "get_satellite_params", {"antSatID": sat}) for sat, t in self._params_due.items() if t <= now]
+        if not due:
+            return None
+        _, name, params = min(due, key=lambda d: d[0])
+        return name, params
+
+    def run(self) -> None:
+        while not self._stop_evt.is_set():
+            with self._lock:
+                host, gen = self.host, self._gen
+                job = self._next_job(time.monotonic())
+            if job is None:
+                self._stop_evt.wait(0.5)
+                continue
+            name, params = job
+            try:
+                data = self._fetch(host, name, params, 5.0, self.port)
+            except webservice.WebServiceError as e:
+                self._failed(gen, name, params, e)
+            except Exception as e:  # noqa: BLE001 - a reply we could not parse must not kill the poller
+                self._failed(gen, name, params, webservice.WebServiceError(f"{name}: unreadable reply ({e})"))
+            else:
+                self._answered(gen, name, params, data)
+            self._stop_evt.wait(self.GAP_S)
+
+    # These three run on the poller thread. They never call into the Hub while holding
+    # self._lock: App.set_target holds the Hub's lock while it calls retarget().
+
+    def _news(self, key: str, name: str, data) -> str | None:  # caller holds self._lock
+        """The record text to publish, or None when nothing changed and it isn't due again."""
+        content = json.dumps({"msg": name, "data": data}, separators=(",", ":"), sort_keys=True)
+        compare = content
+        if name == "antenna_status":
+            compare = json.dumps({k: v for k, v in data.items() if k not in self._VOLATILE}, sort_keys=True)
+        now = time.monotonic()
+        last = self._last.get(key)
+        if last and last[0] == compare and now - last[1] < self.REPUBLISH_S.get(name, self.REPUBLISH_DEFAULT_S):
+            return None
+        self._last[key] = (compare, now)
+        return content
+
+    def _emit(self, gen: int, content: str | None, notes: list[str]) -> None:
+        guard = lambda: self._gen == gen  # noqa: E731 - checked under the Hub's lock
+        for text in notes:
+            self.hub.publish(time.time(), "bridge", text, guard=guard)
+        if content:
+            self.hub.publish(time.time(), "web", content, guard=guard)
+
+    def _answered(self, gen: int, name: str, params, data: dict) -> None:
+        now, notes, content = time.monotonic(), [], None
+        with self._lock:
+            if gen != self._gen:
+                return
+            if self._failing:
+                self._failing = False
+                notes.append(f"TV-Hub web service answering again ({self.host})")
+            self._last_err.pop(name, None)
+            if name == "get_satellite_params":
+                self._params_due[params["antSatID"]] = now + self.PARAMS_EVERY_S
+                key = "params:" + params["antSatID"]
+            else:
+                if name in self._due:
+                    self._due[name] = now + self.EVERY_S[name]
+                key = name
+            if name == "antenna_status" and data.get("sat") and data["sat"] not in self._params_due:
+                self._params_due[data["sat"]] = now  # the tracked satellite's settings, straight away
+            if name == "get_autoswitch_status":
+                self.group = data
+            if name == "get_satellite_list":
+                keep = [s for s in data["sats"] if s["id"] and (s["favorite"] or s["user"])]
+                for s in keep:
+                    self._params_due.setdefault(s["id"], now + 2)
+                data = {"sats": keep}
+            if name == "get_event_history_count":
+                last = self._last.get("get_recent_event_history")
+                stale = last is None or now - last[1] >= self.REPUBLISH_DEFAULT_S
+                if data["count"] != self._event_count or stale:
+                    self._events_wanted = bool(data["count"])
+                    if data["count"] == 0:  # empty or just-cleared log: nothing to ask for, but tell the page
+                        content = self._news("get_recent_event_history", "get_recent_event_history", {"events": []})
+                self._event_count = data["count"]
+            else:
+                if name == "get_recent_event_history":
+                    self._events_wanted = False
+                content = self._news(key, name, data)
+        self._emit(gen, content, notes)
+
+    def _failed(self, gen: int, name: str, params, err: Exception) -> None:
+        now, notes = time.monotonic(), []
+        with self._lock:
+            if gen != self._gen:
+                return
+            # Move this job back either way, so one message that keeps failing can't starve the rest.
+            if name == "get_recent_event_history":
+                self._events_wanted = False
+                self._last["get_recent_event_history"] = ("", now)  # again when the count changes, or after a while
+            elif name == "get_satellite_params":
+                self._params_due[params["antSatID"]] = now + self.PARAMS_EVERY_S
+            elif name in self._due:
+                self._due[name] = now + max(self.EVERY_S[name], self.RETRY_S)
+            if isinstance(err, webservice.HubUnreachable):
+                self._pause_until = now + self.RETRY_S
+                if not self._failing:
+                    self._failing = True
+                    notes.append(f"TV-Hub web service not answering ({err}); retrying every {self.RETRY_S} s")
+            else:
+                if self._failing:  # it answered, even if with an error
+                    self._failing = False
+                    notes.append(f"TV-Hub web service answering again ({self.host})")
+                permanent = getattr(err, "code", None) in webservice.PERMANENT_ERRORS and name != "get_satellite_params"
+                if permanent:
+                    self._disabled.add(name)
+                text = f"TV-Hub web service: {err}" + (" (not asking again this session)" if permanent else "")
+                if self._last_err.get(name) != text:
+                    self._last_err[name] = text
+                    notes.append(text)
+        self._emit(gen, None, notes)
+
+
 class App:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -388,6 +624,8 @@ class App:
         self._cmd_lock = threading.Lock()
         self._target_lock = threading.Lock()
         self._last_cmd = 0.0
+        self._select_lock = threading.Lock()
+        self._last_select = -1e9
         if self.mode == "replay":
             entries, timing = read_log(args.replay)
             self.hub = Hub(max(args.history, len(entries) + 100), None)
@@ -399,11 +637,23 @@ class App:
                 log_path = os.path.join(args.log_dir, datetime.now().strftime("tvhub-%Y%m%d-%H%M%S.log"))
             self.hub = Hub(args.history, log_path)
             self.source = LiveSource(self.hub, args.host, args.port, EOLS[args.eol])
+        # Read-only polling of the hub's web service; off with --read-only ("never send anything").
+        self.web = None
+        if self.mode == "live" and not self.read_only and not getattr(args, "no_hub_web", False):
+            self.web = HubWebPoller(self.hub, args.host, port=getattr(args, "hub_web_port", None) or webservice.WEB_PORT)
+
+    def start(self) -> None:
+        self.source.start()
+        if self.web:
+            self.web.start()
 
     def hello(self, status: dict) -> dict:
         a = self.args
         info = {"session": self.hub.session, "mode": self.mode, "status": status,
-                "commands": not self.read_only, "queries": list(QUERY_COMMANDS)}
+                "commands": not self.read_only, "queries": list(QUERY_COMMANDS),
+                "manual": {"jog": JOG_COMMANDS, "limits": MANUAL_LIMITS},
+                "api": BRIDGE_API, "started": STARTED, "code_changed": _code_fingerprint() != CODE_FINGERPRINT,
+                "hub_web": self.web is not None}
         if self.mode == "live":
             info.update(host=a.host, port=a.port, log_path=self.hub.log_path, read_only=a.read_only)
         else:
@@ -421,6 +671,10 @@ class App:
             shown = re.sub(r"[^\x20-\x7e]", "?", cmd.strip())[:60]
             self.hub.note(f"refused to send {shown!r}: {e}")
             raise
+        if is_manual_move(command) and self.hub.antenna_state != "Idle":
+            reason = f"manual pointing needs Idle mode (antenna is {self.hub.antenna_state or 'unknown'}): send HALT first"
+            self.hub.note(f"refused to send {command!r}: {reason}")
+            raise CommandRejected(reason, 409)
         with self._cmd_lock:
             now = time.monotonic()
             if now - self._last_cmd < MIN_COMMAND_INTERVAL_S:
@@ -429,6 +683,46 @@ class App:
             self._last_cmd = now
             self.hub.publish(time.time(), "tx", command)
         return command
+
+    SELECT_INTERVAL_S = 10
+
+    def select_satellite(self, sat) -> str:
+        """Ask the TV-Hub to switch to another satellite of its installed group, as its own
+        web page does (select_satellite, install=N). Only a satellite in the group the hub
+        reported, only while autoswitch is off, and at most once every SELECT_INTERVAL_S."""
+        if self.mode != "live":
+            raise RequestRefused("replaying a log", 409)
+        if self.read_only:
+            raise CommandRejected("the bridge was started with --read-only", 409)
+        if not self.web:
+            raise RequestRefused("the TV-Hub web service is off (--no-hub-web)", 409)
+        group = self.web.installed_group()
+        if not group:
+            raise RequestRefused("the TV-Hub's installed group isn't known yet; try again in a few seconds", 409)
+        if group.get("enabled"):
+            raise RequestRefused("autoswitch is on, so the receivers choose the satellite", 409)
+        wanted = str(sat).strip().upper()
+        member = next((s for s in group.get("sats", []) if (s.get("id") or "").upper() == wanted), None)
+        if member is None:
+            shown = re.sub(r"[^\x20-\x7e]", "?", str(sat).strip())[:20]
+            ids = ", ".join(s["id"] for s in group.get("sats", []))
+            self.hub.note(f"refused satellite change to {shown!r}: not in the installed group ({ids})")
+            raise CommandRejected(f"{shown} is not in the installed group ({ids})")
+        with self._select_lock:
+            now = time.monotonic()
+            if now - self._last_select < self.SELECT_INTERVAL_S:
+                raise CommandRejected(f"one satellite change every {self.SELECT_INTERVAL_S} s", 429)
+            self._last_select = now
+        label = member["id"] + (f" ({member['name']})" if member.get("name") else "")
+        self.hub.note(f"asking the TV-Hub to switch to {label}")
+        try:
+            webservice.select_satellite(self.args.host, member["id"], port=self.web.port)
+        except webservice.WebServiceError as e:
+            self.hub.note(f"TV-Hub did not switch to {member['id']}: {e}")
+            raise RequestRefused(f"the TV-Hub did not accept it: {e}", 502) from e
+        self.hub.note(f"TV-Hub accepted the switch to {label}")
+        self.web.refresh_soon()
+        return member["id"]
 
     def set_target(self, host, port) -> tuple[str, int]:
         """Point the bridge at another dish (TV-Hub). A new address starts a new session:
@@ -441,8 +735,13 @@ class App:
                 self.source.reconnect()
                 return host, port
             self.args.host, self.args.port = host, port
-            self.hub.new_session(before=lambda: self.source.retarget(host, port), hello=self.hello,
-                                 note=f"dish address set to {host}:{port}")
+
+            def before() -> None:
+                self.source.retarget(host, port)
+                if self.web:
+                    self.web.retarget(host)
+
+            self.hub.new_session(before=before, hello=self.hello, note=f"dish address set to {host}:{port}")
             save_config(self.args.config, {"host": host, "port": port})
         return host, port
 
@@ -453,6 +752,8 @@ class App:
 
     def close(self) -> None:
         self.source.stop()
+        if self.web:
+            self.web.stop()
         self.hub.close()
 
 
@@ -528,7 +829,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get_content_type() != "application/json":
             return self._json(415, {"error": "expected application/json"})
         path = urlsplit(self.path).path
-        if path not in ("/api/command", "/api/target", "/api/reconnect"):
+        if path not in ("/api/command", "/api/target", "/api/reconnect", "/api/satellite"):
             return self._json(404, {"error": "not found"})
         body = self._read_json()
         if body is None:
@@ -536,6 +837,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/command":
                 return self._json(200, {"ok": True, "sent": self.app.send_command(str(body.get("cmd", "")))})
+            if path == "/api/satellite":
+                return self._json(200, {"ok": True, "sat": self.app.select_satellite(body.get("sat", ""))})
             if path == "/api/target":
                 host, port = self.app.set_target(body.get("host", ""), body.get("port", DEFAULT_PORT))
                 return self._json(200, {"ok": True, "host": host, "port": port})
@@ -611,6 +914,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="records kept for browsers that connect later (default %(default)s, about 10 h)")
     ap.add_argument("--config", default=CONFIG_FILE, help="where the dish address set in the GUI is saved")
     ap.add_argument("--no-browser", action="store_true", help="don't open the GUI automatically")
+    ap.add_argument("--no-hub-web", action="store_true",
+                    help="don't poll the TV-Hub's web service (read-only status, power and satellite settings)")
+    ap.add_argument("--hub-web-port", type=int, default=webservice.WEB_PORT, help=argparse.SUPPRESS)  # for testing
     args = ap.parse_args(argv)
 
     if args.replay and not os.path.exists(args.replay):
@@ -632,7 +938,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     app = App(args)
     httpd.RequestHandlerClass.app = app
-    app.source.start()
+    app.start()
 
     shown_host = "127.0.0.1" if args.http_host in ("", "0.0.0.0", "::") else args.http_host
     url = f"http://{shown_host}:{args.http_port}/"

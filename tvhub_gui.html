@@ -139,6 +139,22 @@ label.check { display: inline-flex; align-items: center; gap: 5px; font-size: 12
 #cmdForm { display: flex; gap: 6px; margin-top: 10px; }
 #cmdForm input { flex: 1 1 auto; min-width: 0; }
 #cmdResult { margin-top: 8px; min-height: 18px; font-size: 12px; color: var(--ink-2); }
+.jogpad { display: grid; grid-template-columns: repeat(3, 56px); grid-auto-rows: 34px; gap: 6px; outline: none; border-radius: 8px; }
+.jogpad:focus-visible { box-shadow: 0 0 0 2px var(--s1); }
+.jogpad .btn { padding: 0; font-size: 14px; }
+.manual-log { margin-top: 10px; background: var(--page); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px;
+  min-height: 56px; max-height: 220px; overflow: auto; white-space: pre; font-size: 11.5px; color: var(--ink-2); }
+.sig-readout { display: flex; flex-direction: column; justify-content: center; gap: 1px; min-width: 170px; flex: 1 1 170px;
+  font-size: 12px; color: var(--ink-2); }
+.sig-readout .big { font-size: 24px; font-weight: 600; color: var(--ink); line-height: 1.15; font-variant-numeric: tabular-nums; }
+.manual-grid { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: flex-start; margin: 10px 0 8px; }
+.manual-grid > div { min-width: 0; flex: 1 1 200px; }
+.manual-grid table.t td, .manual-grid table.t th { padding: 2px 6px; }
+.manual-grid .btn { padding: 1px 8px; }
+.banner { display: flex; align-items: flex-start; gap: 9px; padding: 9px 12px; border: 1px solid var(--border);
+  border-left: 3px solid var(--warn); border-radius: 10px; background: var(--surface); font-size: 12.5px; }
+.banner[hidden] { display: none; }
+.banner .dot { margin-top: 5px; }
 @media (max-width: 700px) { header.top { position: static; } }
 @media (max-width: 560px) { main { padding: 12px; } header.top { padding: 8px 12px; } .c-tag { width: 76px; } }
 </style>
@@ -161,6 +177,7 @@ label.check { display: inline-flex; align-items: center; gap: 5px; font-size: 12
   <button id="themeBtn" class="btn" title="Switch between automatic, light and dark">Theme: auto</button>
 </header>
 <main>
+  <div id="bridgeBanner" class="banner" role="alert" hidden></div>
   <section class="tiles" id="tiles"></section>
   <section class="row2">
     <div class="card" id="chartCard">
@@ -174,7 +191,7 @@ label.check { display: inline-flex; align-items: center; gap: 5px; font-size: 12
         <button id="csvBtn" class="btn" title="Download the ticks in view as CSV">CSV</button>
       </div>
       <div id="chartWrap" class="chart-wrap">
-        <canvas id="chart" tabindex="0" role="img" aria-label="Strip charts of SNR, RF metric, AGC and pointing over time. Use the Table button for the values."></canvas>
+        <canvas id="chart" tabindex="0" role="img" aria-label="Strip charts of SNR, normalized RF, AGC and pointing over time. Use the Table button for the values."></canvas>
         <div id="tip" class="tip" hidden></div>
       </div>
       <div id="tableWrap" hidden>
@@ -195,7 +212,7 @@ label.check { display: inline-flex; align-items: center; gap: 5px; font-size: 12
     </div>
   </section>
   <section class="row3">
-    <div class="card"><div class="card-head"><h2>Satellite and transponder</h2></div><div id="satBody"></div></div>
+    <div class="card"><div class="card-head"><h2>Satellite and transponder</h2></div><div id="satBody"></div><div id="satHub"></div></div>
     <div class="card"><div class="card-head"><h2>Search and geometry</h2></div><div id="searchBody"></div></div>
     <div class="card"><div class="card-head"><h2>Health</h2></div><div id="healthBody"></div></div>
     <div class="card"><div class="card-head"><h2>Commands</h2><span class="grow"></span><span id="cmdMode" class="muted small"></span></div><div id="cmdBody"></div></div>
@@ -268,6 +285,9 @@ const fmtLat = v => isNum(v) ? Math.abs(v).toFixed(4) + '° ' + (v < 0 ? 'S' : '
 const fmtLon = v => isNum(v) ? Math.abs(v).toFixed(4) + '° ' + (v < 0 ? 'W' : 'E') : '—';
 function lowerBound(a, x) { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m] < x) lo = m + 1; else hi = m; } return lo; }
 function lowerBoundT(a, x) { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m].t < x) lo = m + 1; else hi = m; } return lo; }
+// First index with a value above x. (x + 1e-9 would be a no-op: epoch seconds are ~1.8e9, where a double's step is ~2e-7.)
+function upperBound(a, x) { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m] <= x) lo = m + 1; else hi = m; } return lo; }
+function upperBoundT(a, x) { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m].t <= x) lo = m + 1; else hi = m; } return lo; }
 function nearestIdx(ts, t, maxDist) {
   const i = lowerBound(ts, t); let best = -1, bd = Infinity;
   for (const j of [i - 1, i]) if (j >= 0 && j < ts.length && Math.abs(ts[j] - t) < bd) { bd = Math.abs(ts[j] - t); best = j; }
@@ -286,7 +306,7 @@ const STATE_LVL = { Tracking: 'good', Sleeping: 'good', Searching: 'warn' };
 const DECODER = { QDVB: 'DVB-S', LQPSK: 'DVB-S2 QPSK', L8PSK: 'DVB-S2 8PSK' };
 const HIGH_RATE = new Set(['pos', 'bst', 'rf_agc', 'gprmc', 'avg', 'saved_pos', 'gyro_bias', 'gyro_residue', 'drift',
                            'azoffset', 'status', 'rf_i']);
-const CAP = { ticks: 200000, agc: 100000, raw: 60000, events: 4000, markers: 3000 };
+const CAP = { ticks: 200000, agc: 100000, sig: 20000, raw: 60000, events: 4000, markers: 3000 };
 const EV_GROUPS = [['track', 'Search/track'], ['state', 'State/lock'], ['rf', 'RF board'], ['cmd', 'Commands'], ['sys', 'System']];
 
 // ============================================================ model
@@ -298,11 +318,17 @@ function newModel() {
     status: null, version: null, hw: null, state: null, stateSince: null, subSince: null,
     sel: null, freq: null, satcfg: new Map(), lnb: null, antlnb: null, installed: null, settings: {},
     antcfg: new Map(), satsetup: new Map(), satck: {}, look: {}, lnbCheck: null, selftests: {}, systemId: null,
-    sidelobe: null, rfSel: null, satckAsk: {}, satckAnt: {}, slotChanged: {},
+    sidelobe: null, rfSel: null, satckAsk: {}, satckAnt: {}, slotChanged: {}, hub: null,
+    domeOffset: store.get('domeOffset', null),  // a property of the installation, so remembered between sessions
     search: {}, sleepLimits: null, boresight: null, savedPos: null, azoffset: null, gyro: null, residue: null,
     drift: null, trackBias: null, parts: {},
+    sig: [], sigBest: null, targets: {}, cmdPos: null, lastTx: null,
+    // the TV-Hub's web service, polled read-only by the bridge
+    web: { status: null, power: null, versions: null, config: null, hours: null, sats: {}, params: {}, alerts: null, alertKeys: new Set(),
+           group: null },  // manual pointing: SIGLEVEL readings, TGTLOCATION, position while Idle
     ticks: { t: [], az: [], el: [], skew: [], rf: [], snr: [], sub: [], bstAz: [], bstEl: [], bst3: [] },
     agcS: { t: [], v: [] },
+    sigS: { t: [], v: [], az: [], el: [] },  // SIGLEVEL readings for the chart, with the position each was taken at
     stateChanges: [], markers: [], events: [], raw: [], unparsed: 0,
   };
 }
@@ -329,6 +355,16 @@ const H = {
     T.t.push(t); T.az.push(r.az); T.el.push(r.el); T.skew.push(r.skew); T.rf.push(r.rf); T.snr.push(r.snr);
     T.sub.push(r.substate || ''); T.bstAz.push(NaN); T.bstEl.push(NaN); T.bst3.push(NaN);
     M.pos = r;
+    M.cmdPos = null;  // a +POS is authoritative (none arrive while Idle), so any manual position is now stale
+    if (r.substate === 'TRACKSAT') {  // learn the dome's azimuth offset (no heading input) from a tracked satellite
+      const g = geometry(), look = M.look[r.sat];
+      const trueAz = g && isNum(g.az) ? g.az : look && isNum(look.az) ? look.az : null;
+      if (isNum(trueAz)) {
+        const d = ((r.az - trueAz) % 360 + 540) % 360 - 180;
+        M.domeOffset = M.domeOffset == null ? d : M.domeOffset + 0.05 * ((((d - M.domeOffset) % 360) + 540) % 360 - 180);
+        if (isLive()) store.set('domeOffset', Math.round(M.domeOffset * 100) / 100);
+      }
+    }
     if (!prev || prev.substate !== r.substate) {
       if (prev) ev(t, PHASE_LVL[phaseOf(r.substate)], 'state', `Substate ${prev.substate} → ${r.substate}`);
       M.subSince = t;
@@ -342,12 +378,12 @@ const H = {
     M.bst = r;
     const T = M.ticks, n = T.t.length;
     if (n && Number.isNaN(T.bstAz[n - 1]) && t - T.t[n - 1] < 3) {
-      T.bstAz[n - 1] = r.az; T.bstEl[n - 1] = r.el; T.bst3[n - 1] = isNum(r.third) ? r.third : NaN;
+      T.bstAz[n - 1] = r.az; T.bstEl[n - 1] = r.el; T.bst3[n - 1] = isNum(r.tilt) ? r.tilt : NaN;
     }
   },
   rf_agc(r, t) { M.agc = r; M.agcS.t.push(t); M.agcS.v.push(r.agc); },
-  gprmc(r, t) { M.rmc = r; if (!r.cs_ok) ev(t, 'warn', 'sys', 'NMEA checksum mismatch: ' + r.raw); },
-  nmea(r, t) { if (!r.cs_ok) ev(t, 'warn', 'sys', 'NMEA checksum mismatch: ' + r.raw); },
+  gprmc(r, t) { M.rmc = r; if (r.cs_ok === false) ev(t, 'warn', 'sys', 'NMEA checksum mismatch: ' + r.raw); },
+  nmea(r, t) { if (r.cs_ok === false) ev(t, 'warn', 'sys', 'NMEA checksum mismatch: ' + r.raw); },
   voltage(r, t) {
     const prev = M.volts[r.idx], spec = railSpec(r.rail);
     M.volts[r.idx] = r;
@@ -355,10 +391,11 @@ const H = {
     if (r.lnb_pol && prev && prev.lnb_pol !== r.lnb_pol) ev(t, 'info', 'sys', `LNB supply now ${fmt(r.value, 1)} V (${r.lnb_pol})`);
   },
   state(r, t) {
-    if (r.reply) ev(t, 'cmd', 'cmd', 'Reply: state ' + r.state);
+    if (r.reply && sentRecently('STATE', t)) ev(t, 'cmd', 'cmd', 'Reply: state ' + r.state);
     if (M.state !== r.state) {
       ev(t, STATE_LVL[r.state] || 'info', 'state', `State ${M.state ? M.state + ' → ' : ''}${r.state}`);
       M.state = r.state; M.stateSince = t; M.stateChanges.push({ t, state: r.state });
+      mark('cards');  // the command buttons follow the state (manual pointing needs Idle): don't wait for the next cards pass
     }
   },
   status(r, t) {
@@ -465,9 +502,10 @@ const H = {
     const ck = /^SATCK,([^,]+),(\w+)$/i.exec(r.cmd);
     if (ck) { M.satckAsk[ck[1].toUpperCase()] = { ck: ck[2].toUpperCase(), t }; return; }
     if (/^(SATCONFIG|SATSETUP|SATINSTALL)\b/i.test(r.cmd)) return;  // install traffic: summarised elsewhere
+    if (/^STATE$/i.test(r.cmd) && !sentRecently('STATE', t)) return;  // the TV-Hub's own poll, every ~4 s while Idle
     ev(t, 'cmd', 'cmd', 'TV-Hub received ' + r.cmd);
   },
-  tx(r, t) { ev(t, 'cmd', 'cmd', 'Sent ' + r.cmd); },
+  tx(r, t) { M.lastTx = { cmd: r.cmd, t }; ev(t, 'cmd', 'cmd', 'Sent ' + r.cmd); },
   local_echo(r, t) { ev(t, 'cmd', 'cmd', 'Typed in the capture: ' + r.cmd); },
   reply(r, t) { ev(t, 'cmd', 'cmd', 'Reply: ' + r.text); },
   sat_sel(r, t) {
@@ -529,6 +567,10 @@ const H = {
     }
   },
   sat_error(r, t) { ev(t, 'warn', 'cmd', 'SAT: ' + r.text); },
+  hub_info(r, t) {  // status snapshot from the TV-Hub's own serial log export
+    if (!M.hub) { M.hub = { t }; ev(t, 'info', 'sys', "TV-Hub status snapshot from its serial log export", 'Hub snapshot'); }
+    if (r.key) M.hub[r.key] = r.value;
+  },
   look_angles(r) { M.look[r.sat] = r; },
   system_id(r) { M.systemId = r; },
   boot_note(r, t) { ev(t, 'info', 'sys', r.text); },
@@ -536,12 +578,79 @@ const H = {
     const m = /^uiSatsToInstall,(\d+)/.exec(r.text);
     if (m) ev(t, 'cmd', 'cmd', `TV-Hub installing ${m[1]} satellites`, 'Install');
   },
-  ee_write(r, t) { ev(t, 'info', 'sys', `EEPROM page ${r.page} written (${r.sat})`); },
+  ee_write(r, t) { ev(t, 'info', 'sys', `EEPROM page ${r.page} written` + (r.sat ? ` (${r.sat})` : '')); },
+  ee_locked(r, t) { ev(t, 'warn', 'sys', 'EEPROM locked: the antenna could not save the change'); },
+  malformed(r, t) { ev(t, 'warn', 'cmd', 'Antenna rejected a malformed command: ' + r.cmd); },
+  // ---- manual pointing replies. While Idle the antenna sends no +POS, so the accepted AZ/EL is the best position we have.
+  manual_ack(r, t) {
+    setManualAxis(r.axis.toLowerCase(), () => r.value, t);
+    ev(t, 'cmd', 'cmd', `Antenna accepted ${r.axis} ${fmt(r.value, 1)}°`);
+  },
+  jog_ack(r, t) {  // the antenna echoes an accepted 0.1° step as the bare digit
+    const axis = r.axis.toLowerCase();
+    setManualAxis(axis, v => isNum(v) ? Math.round((axis === 'az' ? wrap360(v + r.delta) : v + r.delta) * 10) / 10 : null, t);
+    ev(t, 'cmd', 'cmd', `Antenna stepped ${r.axis} ${r.delta > 0 ? '+' : '−'}0.1°`);
+  },
+  needs_mode(r, t) {
+    const hint = /^TRACK$/i.test(r.cmd) && /debug/i.test(r.mode) ? ' (Resume tracking sends DEBUGON first, so press it again)' : '';
+    ev(t, 'warn', 'cmd', `Antenna refused ${r.cmd}: it needs ${r.mode} mode${hint}`);
+  },
+  siglevel(r, t) {
+    const p = manualPosition(), az = p && isNum(p.az) ? p.az : NaN, el = p && isNum(p.el) ? p.el : NaN;
+    const rec = { t, signal: r.signal, az, el };
+    M.sig.push(rec);
+    if (!M.sigBest || rec.signal > M.sigBest.signal) M.sigBest = rec;  // kept apart: the list below is trimmed
+    if (M.sig.length > 40) M.sig.splice(0, M.sig.length - 30);
+    M.sigS.t.push(t); M.sigS.v.push(r.signal); M.sigS.az.push(az); M.sigS.el.push(el);
+    ev(t, r.signal > 500 ? 'good' : 'cmd', 'cmd', `Signal strength ${r.signal}` + (r.signal <= 500 ? ' (noise floor)' : '') +
+       (p ? ` at AZ ${fmt(p.az, 1)}° EL ${fmt(p.el, 1)}°` : ''));
+  },
+  tgt_location(r, t) {
+    M.targets[r.sat] = { az: r.az, el: r.el, t };
+    ev(t, 'cmd', 'cmd', `Antenna's target for ${r.sat}: AZ ${fmt(r.az, 1)}° EL ${fmt(r.el, 1)}°`);
+  },
   ee_status(r, t) { ev(t, 'info', 'sys', 'EE status ' + r.text); },
   part_version(r, t) { M.parts[r.name] = r; ev(t, 'info', 'sys', `${r.name} rev ${r.rev} v${r.version} (${r.part})`); },
   bridge(r, t) {
     const bad = /fail|disconnect|refused|closed/i.test(r.text), good = /^connected/i.test(r.text);
     ev(t, bad ? 'warn' : good ? 'good' : 'info', 'sys', 'Bridge: ' + r.text);
+  },
+  hubweb(r, t) {  // a reply from the TV-Hub's web service (the bridge polls read-only messages)
+    const d = r.data || {}, W = M.web;
+    switch (r.msg) {
+      case 'antenna_status': {
+        const prev = W.status;
+        W.status = { ...d, t };
+        if (!prev) break;
+        for (const k of ['power', 'acu', 'antenna']) {
+          const a = prev.leds && prev.leds[k], b = d.leds && d.leds[k];
+          if (b && (!a || a.color !== b.color || a.state !== b.state || a.message !== b.message)) {
+            ev(t, LED_LVL[b.color] || 'info', 'sys', `TV-Hub ${LED_NAME[k]} light ${String(b.color).toLowerCase()}` +
+               (b.state === 'FLASH' ? ' (flashing)' : '') + (b.message ? ': ' + b.message : ''));
+          }
+        }
+        if (prev.hub_state !== d.hub_state) ev(t, d.hub_state === 'OK' ? 'good' : 'warn', 'sys', `TV-Hub state ${prev.hub_state} → ${d.hub_state}`);
+        break;
+      }
+      case 'power': W.power = { ...d, t }; break;
+      case 'antenna_versions': W.versions = { ...d, t }; break;
+      case 'get_antenna_config': W.config = { ...d, t }; break;
+      case 'ophours': W.hours = { ...d, t }; break;
+      case 'get_autoswitch_status': W.group = { ...d, t }; break;
+      case 'get_satellite_list': W.sats = Object.fromEntries((d.sats || []).map(x => [x.id, x])); break;
+      case 'get_satellite_params': if (d.sat) W.params[d.sat] = { ...d, t }; break;
+      case 'get_recent_event_history': {
+        const first = W.alerts == null;
+        W.alerts = d.events || [];
+        for (const e of W.alerts) {  // alerts new since this page loaded become events; the rest are listed in Health
+          const key = `${e.t}|${e.level}|${e.text}`;
+          if (W.alertKeys.has(key)) continue;
+          W.alertKeys.add(key);
+          if (!first) ev(t, /RESOLVED/i.test(e.level || '') ? 'good' : 'warn', 'sys', `TV-Hub ${(e.level || 'event').toLowerCase()}: ${e.text}`);
+        }
+        break;
+      }
+    }
   },
   unparsed() { M.unparsed++; },
 };
@@ -561,6 +670,7 @@ function trimModel() {
   const T = M.ticks;
   if (T.t.length > CAP.ticks * 1.1) { const k = T.t.length - CAP.ticks; for (const key in T) T[key].splice(0, k); }
   if (M.agcS.t.length > CAP.agc * 1.1) { const k = M.agcS.t.length - CAP.agc; M.agcS.t.splice(0, k); M.agcS.v.splice(0, k); }
+  if (M.sigS.t.length > CAP.sig * 1.1) { const k = M.sigS.t.length - CAP.sig; for (const key in M.sigS) M.sigS[key].splice(0, k); }
   if (M.markers.length > CAP.markers * 1.1) M.markers.splice(0, M.markers.length - CAP.markers);
   if (M.stateChanges.length > 6000) M.stateChanges.splice(0, M.stateChanges.length - 5000);
   if (M.raw.length > CAP.raw * 1.1) { M.raw.splice(0, M.raw.length - CAP.raw); rebuildRawView(); }
@@ -647,22 +757,26 @@ const TSTEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 1
 const PANELS = [
   { id: 'snr', title: 'SNR', unit: ' dB', dec: 2, floor0: true, minSpan: 4, series: [{ key: 'snr', name: 'SNR', color: 's1' }],
     refs: () => M.sleepLimits ? [{ v: M.sleepLimits.lo_db, label: 'sleep wake lo' }, { v: M.sleepLimits.hi_db, label: 'hi' }] : [] },
-  { id: 'rf', title: 'RF metric', unit: '', dec: 0, floor0: true, minSpan: 1000, series: [{ key: 'rf', name: 'RF', color: 's1' }],
+  // SIGLEVEL readings (manual pointing) are dots: the same scale as RF, taken while +POS is silent.
+  { id: 'rf', title: 'Normalized RF', unit: '', dec: 0, floor0: true, minSpan: 1000,
+    series: [{ key: 'rf', name: 'RF', color: 's1' }, { sig: 'v', name: 'SIGLEVEL', color: 'ink', points: true }],
     refs: () => M.search.threshold != null ? [{ v: M.search.threshold, label: 'search threshold' }] : [] },
   { id: 'agc', title: 'AGC', unit: '', dec: 0, minSpan: 200, series: [{ agc: true, name: 'AGC', color: 's1' }],
     refs: () => M.sidelobe && M.sidelobe.threshold ? [{ v: M.sidelobe.threshold, label: 'sidelobe threshold' }] : [] },
   { id: 'el', title: 'Elevation', unit: '°', dec: 1, minSpan: 2,
-    series: [{ key: 'el', name: 'POS', color: 's1' }, { key: 'bstEl', name: 'BST', color: 's2' }],
+    series: [{ key: 'el', name: 'Position', color: 's1' }, { key: 'bstEl', name: 'Boresight', color: 's2' },
+             { sig: 'el', name: 'Reading', color: 'ink', points: true }],
     refs: () => { const g = geometry(), out = [];
       if (g && isNum(g.el)) out.push({ v: g.el, label: 'expected' });
       if (g && isNum(g.elMax)) out.push({ v: g.elMax, label: 'highest GEO elevation' });
       return out; } },
   { id: 'az', title: 'Azimuth, dome frame', unit: '°', dec: 1, minSpan: 2, wrap: true,
-    series: [{ key: 'az', name: 'POS', color: 's1' }, { key: 'bstAz', name: 'BST', color: 's2' }] },
+    series: [{ key: 'az', name: 'Position', color: 's1' }, { key: 'bstAz', name: 'Boresight', color: 's2' },
+             { sig: 'az', name: 'Reading', color: 'ink', points: true }] },
   { id: 'skew', title: 'Skew', unit: '°', dec: 1, minSpan: 2, off: true, series: [{ key: 'skew', name: 'Skew', color: 's1' }],
     refs: () => { const g = geometry(); return g && isNum(g.skew) ? [{ v: g.skew, label: 'expected' }] : []; } },
-  { id: 'bst3', title: 'BST third value (meaning unknown)', unit: '', dec: 1, minSpan: 2, off: true,
-    series: [{ key: 'bst3', name: 'BST 3rd', color: 's1' }] },
+  { id: 'bst3', title: 'Boresight tilt', unit: '', dec: 1, minSpan: 2, off: true,
+    series: [{ key: 'bst3', name: 'Tilt', color: 's1' }] },
 ];
 const panelOn = Object.fromEntries(PANELS.map(p => [p.id, !p.off]));
 Object.assign(panelOn, store.get('panels', {}));
@@ -711,9 +825,10 @@ function ensureSize() {
 }
 
 function viewRange() {
-  const T = M.ticks.t, A = M.agcS.t;
-  const dMin = Math.min(T.length ? T[0] : Infinity, A.length ? A[0] : Infinity);
-  const dMax = Math.max(T.length ? T[T.length - 1] : -Infinity, A.length ? A[A.length - 1] : -Infinity);
+  const T = M.ticks.t, A = M.agcS.t, S = M.sigS.t;
+  const dMin = Math.min(T.length ? T[0] : Infinity, A.length ? A[0] : Infinity, S.length ? S[0] : Infinity);
+  const dMax = Math.max(T.length ? T[T.length - 1] : -Infinity, A.length ? A[A.length - 1] : -Infinity,
+                        S.length ? S[S.length - 1] : -Infinity);
   if (!Number.isFinite(dMin)) return null;
   if (!view.follow && view.t0 != null) return [view.t0, view.t1];
   const end = isLive() ? Math.max(dMax, Date.now() / 1000) : dMax;
@@ -779,12 +894,25 @@ function strokeSeries(ctx, ts, vs, j0, j1, xOf, yOf, gap, wrap, tf) {
   ctx.stroke();
 }
 
-function seriesData(s) { return s.agc ? { ts: M.agcS.t, vs: M.agcS.v } : { ts: M.ticks.t, vs: M.ticks[s.key] }; }
+function seriesData(s) {
+  if (s.agc) return { ts: M.agcS.t, vs: M.agcS.v };
+  if (s.sig) return { ts: M.sigS.t, vs: M.sigS[s.sig] };
+  return { ts: M.ticks.t, vs: M.ticks[s.key] };
+}
+function drawPoints(ctx, s, xOf, yOf, tf) {  // one dot per reading, ringed with the surface colour so it reads on top of a line
+  for (let j = s.a; j <= s.b; j++) {
+    const v = s.vs[j];
+    if (!isNum(v)) continue;
+    const x = xOf(s.ts[j]), y = yOf(tf ? tf(v) : v);
+    ctx.beginPath(); ctx.arc(x, y, 5, 0, 2 * Math.PI); ctx.fillStyle = C.surface; ctx.fill();
+    ctx.beginPath(); ctx.arc(x, y, 3.5, 0, 2 * Math.PI); ctx.fillStyle = C[s.color]; ctx.fill();
+  }
+}
 
 function drawPanel(ctx, lay, P, t0, t1, xOf, gap) {
   const { p, head, plot } = P, x0 = lay.x0, x1 = lay.x1;
   const ser = p.series.map(s => {
-    const d = seriesData(s), n = d.ts.length, a = lowerBound(d.ts, t0), b = lowerBound(d.ts, t1 + 1e-9) - 1;
+    const d = seriesData(s), n = d.ts.length, a = lowerBound(d.ts, t0), b = upperBound(d.ts, t1) - 1;
     return { ...s, ...d, a, b, j0: Math.max(0, a - 1), j1: Math.min(n - 1, b + 1) };
   });
   const last = ser.map(s => {
@@ -792,8 +920,10 @@ function drawPanel(ctx, lay, P, t0, t1, xOf, gap) {
     return null;
   });
   // Azimuth near 0/360: plot relative to the newest value so a small wobble stays continuous.
+  // The reference is the newest value of any series, so readings taken while halted (no +POS) wrap too.
   let tf = null;
-  if (p.wrap && last[0] != null) { const ref = last[0]; tf = v => ref + ((((v - ref) % 360) + 540) % 360) - 180; }
+  const ref = last.find(v => v != null);
+  if (p.wrap && ref != null) tf = v => ref + ((((v - ref) % 360) + 540) % 360) - 180;
   let lo = Infinity, hi = -Infinity;
   for (const s of ser) for (let j = s.a; j <= s.b; j++) {
     let v = s.vs[j];
@@ -813,13 +943,24 @@ function drawPanel(ctx, lay, P, t0, t1, xOf, gap) {
   ctx.fillText(p.title, x0, hy);
   let lx = x0 + ctx.measureText(p.title).width + 14;
   ctx.font = FONT;
-  if (ser.length > 1) for (const s of ser) {
-    ctx.strokeStyle = C[s.color]; ctx.lineWidth = 2; ctx.lineCap = 'round';
-    ctx.beginPath(); ctx.moveTo(lx, hy); ctx.lineTo(lx + 12, hy); ctx.stroke();
+  // point series (SIGLEVEL readings) take header space only while a reading is in view
+  const shown = ser.map((s, k) => !s.points || last[k] != null), nShown = shown.filter(Boolean).length;
+  if (nShown > 1) ser.forEach((s, k) => {
+    if (!shown[k]) return;
+    if (s.points) { ctx.fillStyle = C[s.color]; ctx.beginPath(); ctx.arc(lx + 6, hy, 3, 0, 2 * Math.PI); ctx.fill(); }
+    else {
+      ctx.strokeStyle = C[s.color]; ctx.lineWidth = 2; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(lx, hy); ctx.lineTo(lx + 12, hy); ctx.stroke();
+    }
     ctx.fillStyle = C.ink2; ctx.fillText(s.name, lx + 17, hy);
     lx += 17 + ctx.measureText(s.name).width + 12;
-  }
-  const vals = ser.map((s, k) => (ser.length > 1 ? s.name + ' ' : '') + (last[k] == null ? '—' : fmt(last[k], p.dec) + p.unit)).join('  ·  ');
+  });
+  const valOf = k => last[k] == null ? '—' : fmt(last[k], p.dec) + p.unit;
+  let vals = ser.map((s, k) => shown[k] ? (nShown > 1 ? s.name + ' ' : '') + valOf(k) : null).filter(Boolean).join('  ·  ');
+  // On a narrow chart drop the names (the legend gives the order), then shorten, so values never overprint the legend.
+  const room = x1 - lx - 16;
+  if (ctx.measureText(vals).width > room && nShown > 1) vals = ser.map((s, k) => shown[k] ? valOf(k) : null).filter(Boolean).join(' · ');
+  if (ctx.measureText(vals).width > room) vals = fitText(ctx, vals, room);
   if (refs.length) {  // named up here so no label ever sits on the data
     const unit = p.unit.trim() === '°' ? '°' : p.unit;
     const note = fitText(ctx, refs.map(r => `${r.label} ${fmt(r.v, p.dec)}`).join(' · ') + unit,
@@ -870,9 +1011,11 @@ function drawPanel(ctx, lay, P, t0, t1, xOf, gap) {
   ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
   for (let k = ser.length - 1; k >= 0; k--) {
     const s = ser[k];
+    if (s.points) continue;
     ctx.strokeStyle = C[s.color];
     strokeSeries(ctx, s.ts, s.vs, s.j0, s.j1, xOf, yOf, gap, p.wrap, tf);
   }
+  for (const s of ser) if (s.points) drawPoints(ctx, s, xOf, yOf, tf);  // on top of the lines
   ctx.restore();
 }
 
@@ -921,7 +1064,7 @@ function drawChart() {
 }
 
 function drawMarkers(ctx, lay, t0, t1, xOf) {
-  const ms = M.markers, a = lowerBoundT(ms, t0), b = lowerBoundT(ms, t1 + 1e-9);
+  const ms = M.markers, a = lowerBoundT(ms, t0), b = upperBoundT(ms, t1);
   ctx.save(); ctx.font = FONT; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
   let lastEnd = -Infinity;
   for (let k = a; k < b; k++) {
@@ -982,8 +1125,10 @@ function drawAxis(ctx, lay, t0, t1, xOf) {
 
 function drawHover(ctx, lay, xOf) {
   const hv = CH.hover, T = M.ticks;
-  if (!hv || hv.i == null || hv.i >= T.t.length) return;
-  const t = T.t[hv.i];
+  if (!hv) return;
+  const onSig = hv.sig != null;  // hovering a SIGLEVEL reading rather than a +POS tick
+  if (onSig ? hv.sig >= M.sigS.t.length : (hv.i == null || hv.i >= T.t.length)) return;
+  const t = onSig ? M.sigS.t[hv.sig] : T.t[hv.i];
   if (t < CH.t0 || t > CH.t1) return;
   const x = Math.round(xOf(t)) + 0.5;
   ctx.save(); ctx.strokeStyle = C.ink; ctx.globalAlpha = 0.4; ctx.lineWidth = 1;
@@ -992,7 +1137,9 @@ function drawHover(ctx, lay, xOf) {
     if (!P.yOf) continue;
     for (const s of P.ser) {
       let v, tt = t;
-      if (s.agc) { const j = nearestIdx(M.agcS.t, t, 15); if (j < 0) continue; v = M.agcS.v[j]; tt = M.agcS.t[j]; }
+      if (s.points) { if (!onSig) continue; v = s.vs[hv.sig]; }
+      else if (onSig) continue;
+      else if (s.agc) { const j = nearestIdx(M.agcS.t, t, 15); if (j < 0) continue; v = M.agcS.v[j]; tt = M.agcS.t[j]; }
       else v = T[s.key][hv.i];
       if (!isNum(v)) continue;
       const px = xOf(tt), py = P.yOf(P.tf ? P.tf(v) : v);
@@ -1004,39 +1151,27 @@ function drawHover(ctx, lay, xOf) {
 }
 
 function stateAt(t) {
-  const sc = M.stateChanges, k = lowerBoundT(sc, t + 1e-9) - 1;
+  const sc = M.stateChanges, k = upperBoundT(sc, t) - 1;
   return k >= 0 ? sc[k].state : null;
 }
 
-function showTip(i, px, py) {
-  const T = M.ticks, t = T.t[i], tip = CH.tip;
-  tip.replaceChildren(el('div', 'tip-time', fmtDateTime(t)));
-  const row = (color, value, label) => {
-    const r = el('div', 'tip-row'), key = el('span', 'key');
-    if (color) key.style.background = C[color];
-    r.append(key, el('b', null, value), el('span', 'lbl', label));
-    tip.append(r);
-  };
-  const j = nearestIdx(M.agcS.t, t, 15);
-  row(null, fmt(T.snr[i], 2) + ' dB', 'SNR');
-  row(null, fmtInt(T.rf[i]), 'RF metric');
-  row(null, j >= 0 ? fmtInt(M.agcS.v[j]) : '—', 'AGC');
-  row('s1', fmt(T.el[i], 1) + '°', 'elevation, POS');
-  row('s2', fmt(T.bstEl[i], 1) + '°', 'elevation, BST');
-  row('s1', fmt(T.az[i], 1) + '°', 'azimuth, POS');
-  row('s2', fmt(T.bstAz[i], 1) + '°', 'azimuth, BST');
-  row(null, fmt(T.skew[i], 1) + '°', 'skew');
-  row(null, fmt(T.bst3[i], 1), 'BST third value');
-  row(null, T.sub[i] || '—', 'substate, ' + PHASE_NAME[phaseOf(T.sub[i])]);
-  row(null, stateAt(t) || '—', 'state');
+function tipRow(color, value, label) {
+  const r = el('div', 'tip-row'), key = el('span', 'key');
+  if (color) key.style.background = C[color];
+  r.append(key, el('b', null, value), el('span', 'lbl', label));
+  CH.tip.append(r);
+}
+function tipEvents(t) {  // events within a few pixels of the hovered time
   const tol = Math.max(2, 8 * (CH.t1 - CH.t0) / (CH.lay.x1 - CH.lay.x0));
   const near = [];
   for (let k = lowerBoundT(M.events, t - tol); k < M.events.length && M.events[k].t <= t + tol && near.length < 4; k++) near.push(M.events[k]);
-  if (near.length) {
-    const box = el('div', 'tip-ev');
-    for (const e of near) box.append(el('div', null, `${fmtClock(e.t)} ${e.text}`));
-    tip.append(box);
-  }
+  if (!near.length) return;
+  const box = el('div', 'tip-ev');
+  for (const e of near) box.append(el('div', null, `${fmtClock(e.t)} ${e.text}`));
+  CH.tip.append(box);
+}
+function placeTip(px, py) {
+  const tip = CH.tip;
   tip.hidden = false;
   const W = CH.wrap.clientWidth, tw = tip.offsetWidth, th = tip.offsetHeight;
   let left = px + 16;
@@ -1044,18 +1179,60 @@ function showTip(i, px, py) {
   tip.style.left = Math.max(0, left) + 'px';
   tip.style.top = Math.max(0, Math.min(CH.lay.h - th, py - 30)) + 'px';
 }
+function showSigTip(k, px, py) {  // a SIGLEVEL reading: value and the position it was taken at
+  const S = M.sigS, t = S.t[k];
+  CH.tip.replaceChildren(el('div', 'tip-time', fmtDateTime(t)));
+  tipRow('ink', fmtInt(S.v[k]) + (S.v[k] <= 500 ? ' (noise floor)' : ''), 'SIGLEVEL reading');
+  tipRow(null, fmt(S.el[k], 1) + '°', 'elevation at the reading');
+  tipRow(null, fmt(S.az[k], 1) + '°', 'azimuth at the reading');
+  tipRow(null, stateAt(t) || '—', 'state');
+  tipEvents(t);
+  placeTip(px, py);
+}
+function showTip(i, px, py) {
+  const T = M.ticks, t = T.t[i], tip = CH.tip;
+  tip.replaceChildren(el('div', 'tip-time', fmtDateTime(t)));
+  const row = tipRow;
+  const j = nearestIdx(M.agcS.t, t, 15);
+  row(null, fmt(T.snr[i], 2) + ' dB', 'SNR');
+  row(null, fmtInt(T.rf[i]), 'normalized RF');
+  row(null, j >= 0 ? fmtInt(M.agcS.v[j]) : '—', 'AGC');
+  row('s1', fmt(T.el[i], 1) + '°', 'elevation, position');
+  row('s2', fmt(T.bstEl[i], 1) + '°', 'elevation, boresight');
+  row('s1', fmt(T.az[i], 1) + '°', 'azimuth, position');
+  row('s2', fmt(T.bstAz[i], 1) + '°', 'azimuth, boresight');
+  row(null, fmt(T.skew[i], 1) + '°', 'skew');
+  row(null, fmt(T.bst3[i], 1) + '°', 'boresight tilt');
+  row(null, T.sub[i] || '—', 'substate, ' + PHASE_NAME[phaseOf(T.sub[i])]);
+  row(null, stateAt(t) || '—', 'state');
+  tipEvents(t);
+  placeTip(px, py);
+}
 function hideTip() { CH.tip.hidden = true; }
 
 function localXY(e) { const r = CH.cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
 function tOfX(x) { const lay = CH.lay; return CH.t0 + (x - lay.x0) / (lay.x1 - lay.x0) * (CH.t1 - CH.t0); }
+function nearestIn(ts, t) {  // index of the sample nearest to t, or -1 when there are none
+  if (!ts.length) return -1;
+  let i = lowerBound(ts, t);
+  if (i >= ts.length) i = ts.length - 1;
+  if (i > 0 && Math.abs(ts[i - 1] - t) <= Math.abs(ts[i] - t)) i--;
+  return i;
+}
 function hoverAtX(x, y) {
-  const T = M.ticks.t;
-  if (!T.length || !CH.lay) return;
+  const T = M.ticks.t, S = M.sigS.t;
+  if ((!T.length && !S.length) || !CH.lay) return;
   const t = tOfX(Math.min(CH.lay.x1, Math.max(CH.lay.x0, x)));
-  let i = lowerBound(T, t);
-  if (i >= T.length) i = T.length - 1;
-  if (i > 0 && Math.abs(T[i - 1] - t) <= Math.abs(T[i] - t)) i--;
-  if (T[i] < CH.t0 || T[i] > CH.t1) { CH.hover = null; hideTip(); mark('chart'); return; }
+  const i = nearestIn(T, t), k = nearestIn(S, t);
+  const clear = () => { CH.hover = null; hideTip(); mark('chart'); };
+  if (k >= 0 && (i < 0 || Math.abs(S[k] - t) < Math.abs(T[i] - t))) {  // a SIGLEVEL reading is the nearest sample
+    if (S[k] < CH.t0 || S[k] > CH.t1) return clear();
+    CH.hover = { sig: k };
+    mark('chart');
+    showSigTip(k, CH.xOf(S[k]), y);
+    return;
+  }
+  if (T[i] < CH.t0 || T[i] > CH.t1) return clear();
   CH.hover = { i };
   mark('chart');
   showTip(i, CH.xOf(T[i]), y);
@@ -1088,8 +1265,9 @@ CH.cv.addEventListener('dblclick', () => { Object.assign(view, { follow: true, t
 CH.cv.addEventListener('keydown', e => {
   const T = M.ticks.t;
   if (!T.length) return;
-  const a = lowerBound(T, CH.t0), b = Math.max(a, lowerBound(T, CH.t1 + 1e-9) - 1);
-  let i = CH.hover ? CH.hover.i : b;
+  const a = lowerBound(T, CH.t0), b = upperBound(T, CH.t1) - 1;
+  if (b < a) return;  // no +POS tick in view (e.g. halted: only SIGLEVEL readings), nothing to step through
+  let i = CH.hover && CH.hover.i != null ? CH.hover.i : b;
   if (e.key === 'ArrowLeft') i -= e.shiftKey ? 10 : 1;
   else if (e.key === 'ArrowRight') i += e.shiftKey ? 10 : 1;
   else if (e.key === 'Home') i = a;
@@ -1130,7 +1308,7 @@ $('#followBtn').addEventListener('click', () => {
   syncViewButtons();
 });
 for (const p of PANELS) {
-  const b = el('button', 'chip', p.id === 'bst3' ? 'BST 3rd' : p.id === 'az' ? 'AZ' : p.id === 'el' ? 'EL' : p.title.split(',')[0]);
+  const b = el('button', 'chip', p.id === 'bst3' ? 'Tilt' : p.id === 'az' ? 'AZ' : p.id === 'el' ? 'EL' : p.title.split(',')[0]);
   b.setAttribute('aria-pressed', String(panelOn[p.id]));
   b.title = p.title;
   b.addEventListener('click', () => {
@@ -1150,8 +1328,8 @@ $('#tableBtn').addEventListener('click', () => {
 $('#csvBtn').addEventListener('click', () => {
   const r = viewRange();
   if (!r) return;
-  const T = M.ticks, a = lowerBound(T.t, r[0]), b = lowerBound(T.t, r[1] + 1e-9);
-  const out = ['time_utc,az,el,skew,rf,snr,substate,bst_az,bst_el,bst_third,agc'];
+  const T = M.ticks, a = lowerBound(T.t, r[0]), b = upperBound(T.t, r[1]);
+  const out = ['time_utc,az,el,skew,normalized_rf,snr,substate,boresight_az,boresight_el,boresight_tilt,agc'];
   const cell = v => isNum(v) ? v : '';
   for (let i = a; i < b; i++) {
     const j = nearestIdx(M.agcS.t, T.t[i], 15);
@@ -1250,7 +1428,7 @@ $('#rawSearch').addEventListener('input', e => { rawQuery = e.target.value.trim(
 $('#rawFollow').addEventListener('change', e => { rawList.follow = e.target.checked; rawList.refresh(); });
 
 // ticks table (the chart's table view)
-const TICK_COLS = ['Time', 'SNR', 'RF', 'AGC', 'EL POS', 'EL BST', 'AZ POS', 'AZ BST', 'Skew', 'BST 3rd', 'Substate'];
+const TICK_COLS = ['Time', 'SNR', 'Norm. RF', 'AGC', 'EL', 'Bore EL', 'AZ', 'Bore AZ', 'Skew', 'Tilt', 'Substate'];
 for (const c of TICK_COLS) $('#ticksHead').append(el('span', null, c));
 const ticksList = new VList($('#ticksList'), 22, (row, i) => {
   const T = M.ticks;
@@ -1264,12 +1442,12 @@ const ticksList = new VList($('#ticksList'), 22, (row, i) => {
 ticksList.follow = false;
 function refreshTable() {
   const r = viewRange(), T = M.ticks.t, items = [];
-  if (r) for (let i = lowerBound(T, r[1] + 1e-9) - 1; i >= 0 && T[i] >= r[0]; i--) items.push(i);
+  if (r) for (let i = upperBound(T, r[1]) - 1; i >= 0 && T[i] >= r[0]; i--) items.push(i);
   ticksList.set(items);
 }
 
 // ============================================================ tiles and cards
-const TILE_DEFS = [['snr', 'SNR'], ['rf', 'RF metric'], ['agc', 'AGC'], ['state', 'State'], ['sat', 'Satellite'],
+const TILE_DEFS = [['snr', 'SNR'], ['rf', 'Normalized RF'], ['agc', 'AGC'], ['state', 'State'], ['sat', 'Satellite'],
                    ['point', 'Pointing EL / AZ'], ['lnb', 'LNB supply'], ['temp', 'Antenna temperature']];
 const tiles = {};
 for (const [id, label] of TILE_DEFS) {
@@ -1286,13 +1464,40 @@ function setTile(id, value, sub) {
   if (sub instanceof Node) s.replaceChildren(sub); else s.textContent = sub || '';
   s.title = s.textContent;
 }
-function lnbReading() { return Object.values(M.volts).find(v => v.lnb_pol) || null; }
+const LED_LVL = { GREEN: 'good', ORANGE: 'warn', AMBER: 'warn', YELLOW: 'warn', RED: 'bad' };
+const LED_NAME = { power: 'power', acu: 'TV-Hub', antenna: 'antenna' };
+const lnbPol = v => v < 10 ? 'off' : v < 15.5 ? 'V' : 'H';  // 13 V = vertical, 18 V = horizontal
+function lnbReading() {  // +VOLTAGE from the antenna; until the first one, the TV-Hub web service's copy of it
+  const v = Object.values(M.volts).find(x => x.lnb_pol), w = M.web.power;
+  if (v) return v;
+  return w && w.antenna && isNum(w.antenna.lnb) ? { value: w.antenna.lnb, lnb_pol: lnbPol(w.antenna.lnb), t: w.t, web: true } : null;
+}
+const satName = id => {
+  const W = M.web, x = id && (W.params[id] || W.sats[id] || (W.group && (W.group.sats || []).find(g => g.id === id)));
+  return x && x.name ? x.name : null;
+};
+function hubAlerts() {  // newest first, each marked active when no later "RESOLVED" line matches it
+  const list = M.web.alerts || [], out = [];
+  for (let k = list.length - 1; k >= 0; k--) {
+    const e = list[k], resolved = /RESOLVED/i.test(e.level || '');
+    const key = e.text.replace(/, retrying$/, '');
+    const cleared = resolved || list.slice(k + 1).some(x => /RESOLVED/i.test(x.level || '') && x.text.replace(/, retrying$/, '') === key);
+    out.push({ ...e, resolved, active: !resolved && !cleared });
+  }
+  return out;
+}
 
 function renderTiles() {
   const p = M.pos, now = nowT(), sel = M.sel, f = M.freq;
+  // While Idle (halted) the antenna sends no +POS, so the last one goes stale; say so, and show SIGLEVEL readings instead.
+  const idleStale = M.state === 'Idle' && (!p || now - p.t > 10);
+  const lastSig = M.sig.length ? M.sig[M.sig.length - 1] : null;
+  const staleNote = () => dotLabel('info', p ? `Idle · last +POS ${fmtDurShort(now - p.t)} ago` : 'no +POS while halted');
   setTile('snr', p ? fmt(p.snr, 2) + ' dB' : '—',
-    p ? dotLabel(p.snr > 0 ? 'good' : 'bad', p.snr > 0 ? 'Demod locked' : 'No demod lock') : 'waiting for +POS');
-  setTile('rf', p ? fmtInt(p.rf) : '—', p ? (p.rf <= 520 ? '≈500 is the no-lock floor' : 'rescaled at each lock') : '');
+    idleStale ? staleNote() : p ? dotLabel(p.snr > 0 ? 'good' : 'bad', p.snr > 0 ? 'Demod locked' : 'No demod lock') : 'waiting for +POS');
+  if (M.state === 'Idle' && lastSig && (!p || lastSig.t > p.t)) {  // a reading taken while halted beats the last +POS
+    setTile('rf', fmtInt(lastSig.signal), `SIGLEVEL ${fmtDurShort(now - lastSig.t)} ago` + (lastSig.signal <= 500 ? ' · ≈500 is the floor' : ''));
+  } else setTile('rf', p ? fmtInt(p.rf) : '—', idleStale ? staleNote() : p ? (p.rf <= 520 ? '≈500 is the no-lock floor' : 'rescaled at each lock') : '');
   let agcSub = 'waiting for RF: AGC';
   if (M.agc) {
     const bits = [], age = now - M.agc.t;
@@ -1304,18 +1509,24 @@ function renderTiles() {
   setTile('agc', M.agc ? fmtInt(M.agc.agc) : '—', agcSub);
   const ph = phaseOf(p && p.substate);
   setTile('state', M.state || '—',
-    p ? dotLabel(PHASE_COLOR[ph] === 'crit' ? 'bad' : PHASE_COLOR[ph] === 'axis' ? 'info' : PHASE_COLOR[ph],
-                 `${p.substate} · ${fmtDurShort(now - M.subSince)}`) : '');
+    M.state === 'Idle' ? dotLabel('warn', `halted · ${fmtDurShort(now - (M.stateSince ?? now))}`)
+      : p ? dotLabel(PHASE_COLOR[ph] === 'crit' ? 'bad' : PHASE_COLOR[ph] === 'axis' ? 'info' : PHASE_COLOR[ph],
+                     `${p.substate} · ${fmtDurShort(now - M.subSince)}`) : '');
   let satSub = f ? `${f.freq} MHz · ${f.decoder}` : 'no RF: FREQ line yet';
   if (f && sel && (f.pol !== sel.pol || f.band !== sel.band)) satSub = `last lock was ${f.pol}/${f.band} ${f.freq} MHz`;
-  setTile('sat', ((p && p.sat) || (sel && sel.sat) || '—') + (sel ? ` ${sel.pol}/${sel.band}` : ''), satSub);
-  const offBeam = p && p.substate === 'TRACKSAT' ? elevationCheck(p.el) : null;
-  setTile('point', p ? `${fmt(p.el, 1)}° / ${fmt(p.az, 1)}°` : '—',
+  const tileSat = (p && p.sat) || (sel && sel.sat);
+  if (satName(tileSat)) satSub = `${satName(tileSat)} · ${satSub}`;
+  setTile('sat', (tileSat || '—') + (sel ? ` ${sel.pol}/${sel.band}` : ''), satSub);
+  const offBeam = p && p.substate === 'TRACKSAT' && M.state !== 'Idle' ? elevationCheck(p.el) : null;
+  const mp = manualPosition();
+  if (mp && mp.commanded) setTile('point', `${fmt(mp.el, 1)}° / ${fmt(mp.az, 1)}°`, 'accepted manual position');
+  else setTile('point', p ? `${fmt(p.el, 1)}° / ${fmt(p.az, 1)}°` : '—',
     offBeam ? dotLabel('warn', `EL ${offBeam}: sidelobe?`)
-      : p ? `skew ${fmt(p.skew, 1)}°` + (M.bst ? ` · BST ${fmt(M.bst.el, 1)}°` : '') : '');
+      : idleStale ? staleNote() : p ? `skew ${fmt(p.skew, 1)}°` : '');
   const lv = lnbReading();
   let lnbSub;
-  if (!lv) lnbSub = 'reported every ~5 min';
+  if (!lv) lnbSub = M.hello && M.hello.hub_web ? 'waiting for a reading' : 'reported every ~5 min';
+  else if (lv.web) lnbSub = 'TV-Hub\'s copy, up to ~5 min old';  // too old to judge a polarization switch
   else if (sel && lv.t >= sel.t) lnbSub = lv.lnb_pol === sel.pol ? dotLabel('good', `matches commanded ${sel.pol}`)
                                                                  : dotLabel('bad', `commanded ${sel.pol}, supply says ${lv.lnb_pol}`);
   else if (sel) lnbSub = `read ${fmtDur(now - lv.t)} ago, before the switch to ${sel.pol}`;
@@ -1323,9 +1534,12 @@ function renderTiles() {
   setTile('lnb', lv ? `${fmt(lv.value, 1)} V` + (lv.lnb_pol === 'off' ? ' (off)' : ` = ${lv.lnb_pol}`) : '—', lnbSub);
   const v42 = Object.values(M.volts).find(v => railSpec(v.rail));
   const st = M.status;
-  setTile('temp', M.temp ? fmt(M.temp.temp, 1) + ' °C' : '—',
-    st ? dotLabel(st.ok ? 'good' : 'bad', (st.ok ? 'status OK' : 'status bits set') + (v42 ? ` · 42V ${fmt(v42.value, 1)}` : ''))
-       : v42 ? `42 V rail ${fmt(v42.value, 1)} V` : '');
+  const wp = M.web.power, wTemp = wp && wp.antenna && isNum(wp.antenna.temp_celsius) ? wp.antenna.temp_celsius : null;
+  const useWeb = isNum(wTemp) && (!M.temp || wp.t > M.temp.t);
+  const hubT = wp && wp.hub && isNum(wp.hub.temp_celsius) ? ` · hub ${fmt(wp.hub.temp_celsius, 1)} °C` : '';
+  setTile('temp', useWeb ? fmt(wTemp, 1) + ' °C' : M.temp ? fmt(M.temp.temp, 1) + ' °C' : '—',
+    st ? dotLabel(st.ok ? 'good' : 'bad', (st.ok ? 'status OK' : 'status bits set') + (v42 ? ` · 42V ${fmt(v42.value, 1)}` : '') + hubT)
+       : v42 ? `42 V rail ${fmt(v42.value, 1)} V` + hubT : hubT.replace(/^ · /, ''));
 }
 
 function kv(rows) {
@@ -1358,6 +1572,7 @@ function table(headers, rows, rowClasses, wrapCols) {
   return wrap;
 }
 
+let satParamsSel = null;  // which satellite's hub settings the Satellite card shows (null: the current one)
 function renderSatCard() {
   const f = M.freq, sel = M.sel, out = [];
   out.push(f ? section('Current transponder (RF: FREQ)', kv([
@@ -1400,6 +1615,49 @@ function renderSatCard() {
                    ['LO', (M.lnb && M.lnb.lo) != null ? M.lnb.lo + ' MHz' : M.antlnb && M.antlnb.lo != null ? M.antlnb.lo + ' MHz' : null]];
   if (lnbRows.some(r => r[1] != null)) out.push(section('LNB', kv(lnbRows)));
   $('#satBody').replaceChildren(...out);
+  renderSatHub();
+}
+let satHubKey = null;
+function renderSatHub() {  // the hub's own settings for a satellite: rebuilt only when they change, so the chips stay clickable
+  const box = $('#satHub'), hubSats = Object.keys(M.web.params).sort(), sel = M.sel;
+  if (!hubSats.length) { if (box.firstChild) box.replaceChildren(); satHubKey = null; return; }
+  const cur = (M.pos && M.pos.sat) || (M.web.status && M.web.status.sat) || (sel && sel.sat);
+  if (satParamsSel && !M.web.params[satParamsSel]) satParamsSel = null;
+  const shown = satParamsSel || (M.web.params[cur] ? cur : hubSats[0]), P = M.web.params[shown];
+  const slots = (P.xponders || []).map(x => M.antcfg.get(`${shown}#${Number(x.id) - 1}`) || M.satcfg.get(`${shown}#${Number(x.id) - 1}`) || null);
+  const key = JSON.stringify([hubSats, cur, shown, P.t, slots.map(a => a && [a.freq, a.sr, a.fec, a.pol, a.band, a.decoder]),
+                              Math.floor((nowT() - P.t) / 60), UTC]);
+  if (key === satHubKey) return;
+  satHubKey = key;
+  const focused = document.activeElement && box.contains(document.activeElement) ? document.activeElement.dataset.sat : null;
+  const chips = el('div', 'chips');
+  for (const id of hubSats) {
+    const b = el('button', 'chip', id + (id === cur ? ' (current)' : ''));
+    b.dataset.sat = id;
+    b.setAttribute('aria-pressed', String(id === shown));
+    b.title = satName(id) || id;
+    b.addEventListener('click', () => { satParamsSel = id === cur ? null : id; satHubKey = null; renderSatHub(); });
+    chips.append(b);
+  }
+  const rows = (P.xponders || []).map((x, k) => {
+    const ant = slots[k];
+    let check = '—';
+    if (ant) {
+      const same = Number(x.freq) === Number(ant.freq) && Number(x.symRate) === Number(ant.sr) && x.fec === ant.fec &&
+                   x.pol === ant.pol && x.band === ant.band && String(x.modType).toUpperCase() === String(ant.decoder).toUpperCase();
+      check = same ? 'same' : dotLabel('warn', `antenna: ${ant.pol}/${ant.band} ${ant.freq} ${ant.sr} ${ant.fec} ${ant.decoder}`);
+    }
+    return [x.id, `${x.pol}/${x.band}`, Number(x.freq) ? String(Number(x.freq)) : dotLabel('warn', '0 (unused)'), String(Number(x.symRate)), x.fec, x.modType, check];
+  });
+  box.replaceChildren(section(`TV-Hub satellite settings: ${shown}${P.name ? ' · ' + P.name : ''}`, chips,
+    kv([['Longitude', lonText(P.lon)],
+        ['Skew offset · computed', `${isNum(P.skew_offset) ? fmt(P.skew_offset, 1) + '°' : '—'} · ${isNum(P.computed_skew) ? fmt(P.computed_skew, 1) + '°' : '—'}`],
+        ['LO1 · LO2 (satellite entry)', `${P.lo1 || '—'} · ${P.lo2 || '—'}`],
+        ['Refreshed', ago(P.t)]]),
+    table(['#', 'Pol/band', 'MHz', 'ksym/s', 'FEC', 'Mod', 'vs antenna SATCONFIG'], rows, null, [6]),
+    note('From the TV-Hub\'s web service (get_satellite_params). The last column compares each transponder with the ' +
+         'antenna\'s SATCONFIG slot (# − 1), when one has been seen this session.')));
+  if (focused) { const b = box.querySelector(`.chip[data-sat="${focused}"]`); if (b) b.focus(); }
 }
 
 function renderSearchCard() {
@@ -1433,7 +1691,7 @@ function renderSearchCard() {
                                                      : ' (longitude unknown until a SATSETUP line)') : null],
       ['Expected true AZ / EL', isNum(g.el) ? `${fmt(g.az, 1)}° / ${fmt(g.el, 1)}°` : null],
       ['Expected skew', isNum(g.skew) ? `${fmt(g.skew, 1)}°` + (p ? ` (antenna ${fmt(p.skew, 1)}°)` : '') : null],
-      ['Measured EL', p ? `POS ${fmt(p.el, 1)}°` + (M.bst ? ` · BST ${fmt(M.bst.el, 1)}°` : '') : null],
+      ['Measured EL', p ? `position ${fmt(p.el, 1)}°` + (M.bst ? ` · boresight ${fmt(M.bst.el, 1)}°` : '') : null],
       ['Dome AZ − true AZ', domeOff != null ? `${fmt(domeOff, 1)}° (no heading input)` : null],
       ['Highest GEO elevation', `${fmt(g.elMax, 1)}°`],
     ]), note('A detection above the highest GEO elevation cannot be a satellite: it is a sidelobe or false detect.')));
@@ -1446,7 +1704,7 @@ function renderSearchCard() {
       const s = M.satsetup.get(name), a = M.look[name], [slon] = satLon(name);
       const calc = g && slon != null ? lookAngles(g.lat, g.lon, slon) : null;
       const off = s && isNum(s.skew_offset) && s.skew_offset !== 0;
-      return [name, slon != null ? fmt(slon, 2) : '—',
+      return [satName(name) ? `${name} · ${satName(name)}` : name, slon != null ? fmt(slon, 2) : '—',
               s && isNum(s.skew_offset) ? (off ? dotLabel('warn', fmt(s.skew_offset, 1)) : fmt(s.skew_offset, 1)) : '—',
               a ? `${fmt(a.az, 1)} / ${fmt(a.el, 1)} / ${fmt(a.skew, 1)}` : '—',
               calc ? `${fmt(calc.az, 1)} / ${fmt(calc.el, 1)} / ${fmt(calc.skew, 1)}` : '—'];
@@ -1459,8 +1717,58 @@ function renderSearchCard() {
   $('#searchBody').replaceChildren(...out);
 }
 
+function renderHubWeb(out) {  // Health card: what the TV-Hub's web service reports
+  const W = M.web, s = W.status, pw = W.power, v = W.versions;
+  if (!s && !pw && !W.alerts) {
+    if (M.hello && M.hello.mode === 'live') {
+      out.push(section('TV-Hub (web service)', empty(M.hello.hub_web ? 'Waiting for the first reply from the TV-Hub\'s web service.'
+        : 'Not polled: the bridge was started with --read-only or --no-hub-web.')));
+    }
+    return;
+  }
+  const rows = [];
+  if (s) {
+    // antenna_status is republished at least once a minute while the web service answers
+    const stale = isLive() && nowT() - s.t > 150;
+    rows.push(['Updated', stale ? dotLabel('warn', `${ago(s.t)}: no fresh reply from the TV-Hub's web service, so these may be out of date`) : ago(s.t)]);
+    for (const k of ['power', 'acu', 'antenna']) {
+      const l = s.leds && s.leds[k];
+      if (l) rows.push([`${LED_NAME[k][0].toUpperCase() + LED_NAME[k].slice(1)} light`,
+                        dotLabel(LED_LVL[l.color] || 'info', `${String(l.color || '?').toLowerCase()}${l.state === 'FLASH' ? ', flashing' : ''}: ${l.message || ''}`)]);
+    }
+    rows.push(['States', `hub ${s.hub_state || '—'} · antenna ${s.state || '—'}` + (isNum(s.bars) ? ` · ${s.bars} bars` : '') +
+                         (s.gps_source ? ` · GPS ${String(s.gps_state || '').toLowerCase()} (${s.gps_source})` : '')]);
+    if (s.line1 || s.line2) rows.push(['Message', [s.line1, s.line2].filter(Boolean).join(' · ')]);
+  }
+  if (pw) {
+    const h = pw.hub || {}, a = pw.antenna || {}, V = x => isNum(x) ? fmt(x, 1) + ' V' : '—';
+    if (isNum(h.output42v) && isNum(a.dc)) rows.push(['42 V feed', `${fmt(h.output42v, 1)} V out of the hub, ${fmt(a.dc, 1)} V at the antenna (${fmt(h.output42v - a.dc, 1)} V drop)`]);
+    rows.push(['TV-Hub rails', `input ${V(h.inputsupplyv)} · 42 V in ${V(h.input42v)} · 24 V out ${V(h.output24v)} · 8 V ${V(h.eight)} · 5 V ${V(h.five)} · 3.3 V ${V(h.three_three)}`]);
+    rows.push(['Antenna rails', `motor ${V(a.motor)} · 8 V ${V(a.eight)} · 5 V ${V(a.five)} · LNB ${V(a.lnb)}` + (isNum(a.lnb) ? ` (${lnbPol(a.lnb)})` : '')]);
+    rows.push(['Temperatures', `antenna ${isNum(a.temp_celsius) ? fmt(a.temp_celsius, 1) + ' °C' : '—'} · hub ${isNum(h.temp_celsius) ? fmt(h.temp_celsius, 1) + ' °C' : '—'} · ${fmtClock(pw.t)}`]);
+  }
+  if (v && v.lnb) {
+    const l = v.lnb, lo = (f, tone) => f && f !== 'OFF' ? `${f} MHz (tone ${String(tone || '?').toLowerCase()})` : 'off';
+    rows.push(['LNB (hub setting)', [l.name || '?', l.voltage, `LO1 ${lo(l.LO1_freq, l.LO1_tone)}`, `LO2 ${lo(l.LO2_freq, l.LO2_tone)}`].filter(Boolean).join(' · ')]);
+  }
+  if (W.config) rows.push(['Sleep · sidelobe', `${W.config.sleep || '—'} · ${W.config.sidelobe || '—'}`]);
+  if (W.hours && isNum(W.hours.hours)) rows.push(['Operational hours', W.hours.hours.toLocaleString('en-US', { minimumFractionDigits: 1 })]);
+  if (v) rows.push(['Software', `hub ${v.hub_software || '?'}${v.in_sync === 'N' ? ' (not in sync)' : ''} · satellite library ${v.sat_library || '?'} · antenna ${v.antenna_software || '?'} · RF ${v.rf || '?'}`]);
+  out.push(section('TV-Hub (web service)', kv(rows)));
+  const alerts = hubAlerts();
+  if (alerts.length) {
+    const act = alerts.filter(e => e.active).length, shown = alerts.filter((e, i) => i < 10 || e.active);
+    out.push(section(`TV-Hub alerts (${act ? act + ' active, ' : ''}newest first)`,
+      table(['Time', 'Alert'], shown.map(e => [
+        isNum(e.t) ? `${fmtDate(e.t)} ${fmtClock(e.t).slice(0, 5)}` : '—',
+        dotLabel(e.resolved ? 'good' : e.active ? 'bad' : 'warn', (e.resolved ? 'resolved: ' : '') + e.text)]), null, [1]),
+      alerts.length > shown.length ? note(`${alerts.length - shown.length} older alerts not shown.`) : null));
+  }
+}
+
 function renderHealthCard() {
   const out = [], idxs = Object.keys(M.volts).map(Number).sort((a, b) => a - b);
+  renderHubWeb(out);
   if (idxs.length) {
     const rows = [];
     for (const i of idxs) {
@@ -1492,6 +1800,22 @@ function renderHealthCard() {
     ['Gyro bias (new)', M.gyro ? `AZ ${fmt(M.gyro.az, 2)} EL ${fmt(M.gyro.el, 2)}` : null],
     ['Drift', M.drift ? `OR ${M.drift.drift.toExponential(2)} · AZ ${M.drift.az_corr.toExponential(2)} · EL ${M.drift.el_corr.toExponential(2)}` : null],
   ])));
+  if (M.hub) {
+    const h = M.hub, num = k => parseFloat(h[k]), hubOut = num('ACU 42V OUTPUT'), atAnt = num('AU POWER (VDC)');
+    const sat = /SAT NAME:\s*([^,]+)/.exec(h['CURSAT MODE'] || '');
+    const volts = (label, k) => isNum(num(k)) ? `${label} ${num(k)}` : null;
+    out.push(section(`TV-Hub snapshot (log export, ${fmtClock(h.t)})`, kv([
+      ['42 V feed', isNum(hubOut) && isNum(atAnt) ? `${fmt(hubOut, 1)} V at the hub, ${fmt(atAnt, 1)} V at the antenna (${fmt(hubOut - atAnt, 1)} V drop)` : null],
+      ['Hub temperature', isNum(num('ACU TEMP CELSIUS')) ? `${fmt(num('ACU TEMP CELSIUS'), 1)} °C` : null],
+      ['Hub buses', [volts('in', 'ACU POWER (VDC)'), volts('8 V', 'ACU 8V BUS'), volts('5 V', 'ACU 5V BUS'), volts('3.3 V', 'ACU 3.3V BUS')].filter(Boolean).join(' · ') || null],
+      ['Antenna LNB / motor', isNum(num('AU LNB VOLTAGE')) ? `LNB ${num('AU LNB VOLTAGE')} V · motor ${h['AU MOTOR POWER'] || '?'} V` : null],
+      ['LNB (hub setting)', h['LNB NAME'] || null],
+      ['Satellite name', sat ? sat[1].trim() : null],
+      ['GPS', h['GPS STATE'] ? `antenna ${h['GPS STATE'].toLowerCase()} · hub ${(h['TVHUB GPS STATE'] || '?').toLowerCase()}` : null],
+      ['Hub software', h['SOFTWARE VERSION'] || null],
+      ['Hub uptime', h['SYSINFO HOST UPTIME'] ? h['SYSINFO HOST UPTIME'].split(' load')[0] : null],
+    ])));
+  }
   const r = M.rmc;
   if (r) {
     const rows = [
@@ -1509,17 +1833,251 @@ function renderHealthCard() {
 const POL_BTNS = [['H', 'L', 'H · low'], ['V', 'L', 'V · low'], ['H', 'H', 'H · high'], ['V', 'H', 'V · high']];
 const cmdUI = { polBtns: [], queryBtns: [], result: null, input: null, send: null };
 function setCmdResult(lvl, text) { if (cmdUI.result) cmdUI.result.replaceChildren(dotLabel(lvl, text)); }
-async function sendCommand(cmd, confirmText) {
-  if (confirmText && !window.confirm(confirmText)) return;
-  setCmdResult('info', `Sending ${cmd}…`);
-  try {
-    const res = await fetch('/api/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cmd }) });
-    const j = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(j.error || 'HTTP ' + res.status);
-    setCmdResult('good', `Sent ${j.sent}. The reply will appear in Events.`);
-  } catch (e) {
-    setCmdResult('bad', `Not sent: ${e.message}`);
+// Commands go out one at a time and at least 550 ms apart: the bridge refuses a second command
+// within half a second (a jog followed straight away by its signal read, say).
+let sendChain = Promise.resolve(), lastSendAt = 0;
+async function sendCommand(cmd, confirmText) {  // resolves true when the bridge sent it
+  if (confirmText && !window.confirm(confirmText)) return false;
+  const run = sendChain.then(async () => {
+    const wait = lastSendAt + 550 - Date.now();
+    if (wait > 0) await sleep(wait);
+    setCmdResult('info', `Sending ${cmd}…`);
+    try {
+      const res = await fetch('/api/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cmd }) });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || 'HTTP ' + res.status);
+      setCmdResult('good', `Sent ${j.sent}. The reply will appear in Events.`);
+      return true;
+    } catch (e) {
+      setCmdResult('bad', `Not sent: ${e.message}`);
+      return false;
+    } finally {
+      lastSendAt = Date.now();
+    }
+  });
+  sendChain = run;  // never rejects
+  return run;
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// ---- manual pointing (antenna HELP: AZ,XXXX / EL,XXX in tenths, 0.1° steps 8/2/4/6; Idle mode only)
+const JOG = [['8', '▲', 'Elevation up 0.1°'], ['4', '◀', 'Azimuth −0.1° (counter-clockwise)'],
+             ['6', '▶', 'Azimuth +0.1° (clockwise)'], ['2', '▼', 'Elevation down 0.1°']];
+const REPLY_KINDS = new Set(['unparsed', 'reply', 'help_entry', 'needs_mode', 'setting', 'ack', 'sat_error', 'unknown_cmd',
+                             'version', 'gps_reply', 'hw_version', 'antlnb', 'sat_sel', 'satinstall', 'local_echo',
+                             'siglevel', 'tgt_location', 'manual_ack', 'jog_ack', 'malformed', 'ee_locked']);
+const sentRecently = (cmd, t) => !!M.lastTx && M.lastTx.cmd === cmd && t - M.lastTx.t < 5;
+function setManualAxis(axis, f, t) {  // update one axis of the accepted manual position, starting from where the dish is
+  const p = manualPosition();
+  const next = { az: p ? p.az : null, el: p ? p.el : null, t };
+  next[axis] = f(next[axis]);
+  M.cmdPos = next;
+}
+function manualPosition() {  // where the dish is pointing: the last accepted manual AZ/EL while Idle, else the last +POS
+  const p = M.pos, c = M.cmdPos;
+  if (M.state === 'Idle' && c && (!p || c.t >= p.t)) return { az: c.az ?? (p ? p.az : null), el: c.el ?? (p ? p.el : null), t: c.t, commanded: true };
+  return p ? { az: p.az, el: p.el, t: p.t, commanded: false } : null;
+}
+let lastJog = 0;
+let readTimer = 0;
+async function manualMove(cmds) {  // send one or more moves (queued), then optionally read the signal
+  clearTimeout(readTimer);
+  for (const c of cmds) if (!await sendCommand(c)) return;
+  // One read 1.5 s after the last move of a burst, so quick jogs don't each queue a read behind them.
+  if (cmdUI.readAfter && cmdUI.readAfter.checked) readTimer = setTimeout(() => sendCommand('SIGLEVEL'), 1500);
+}
+function jog(step) {
+  const now = Date.now();
+  if (now - lastJog < 600 || M.state !== 'Idle') return;
+  lastJog = now;
+  manualMove([step]);
+}
+function wrap360(v) { return ((v % 360) + 360) % 360; }
+function expectedPointing() {  // where the selected satellite should appear, in the antenna's own frame
+  const sat = (M.pos && M.pos.sat) || (M.freq && M.freq.sat) || (M.sel && M.sel.sat);
+  if (!sat) return null;
+  const tgt = M.targets[sat];
+  if (tgt) return { sat, az: tgt.az, el: tgt.el, source: 'the antenna (TGTLOCATION)' };
+  const g = geometry();
+  if (!g) return null;
+  const look = M.look[sat];
+  const az = isNum(g.az) ? g.az : look && isNum(look.az) ? look.az : null;
+  const el = isNum(g.el) ? g.el : look && isNum(look.el) ? look.el : null;
+  return { sat, el: isNum(el) ? el + POS_EL_OFFSET : null, source: 'the GPS fix and orbit geometry',
+           az: isNum(az) && isNum(M.domeOffset) ? wrap360(az + M.domeOffset) : null };
+}
+function buildManual() {
+  const sec = el('div', 'sec');
+  const head = el('div', 'card-head'); head.style.marginBottom = '6px';
+  const state = el('span', 'small');
+  head.append(el('h3', null, 'Manual pointing'), el('span', 'grow'), state);
+  const halt = el('button', 'btn', 'Halt (Idle)'), track = el('button', 'btn', 'Resume tracking');
+  halt.addEventListener('click', () => sendCommand('HALT', 'Halt the antenna?\n\nIt stops tracking and enters Idle mode, so TV reception ' +
+                                                 'stops until you press Resume tracking.'));
+  track.title = 'Sends DEBUGON then TRACK: after a reboot the antenna refuses TRACK until Debug mode is on';
+  track.addEventListener('click', async () => { if (await sendCommand('DEBUGON')) sendCommand('TRACK'); });
+  const row1 = el('div', 'btnrow'); row1.append(halt, track);
+  const pos = el('div', 'small muted'); pos.style.margin = '8px 0';
+  const azIn = el('input'); const elIn = el('input');
+  for (const [inp, label, ph] of [[azIn, 'Azimuth in degrees (antenna frame)', '0–359.9'], [elIn, 'Elevation in degrees', '15–60']]) {
+    inp.type = 'text'; inp.inputMode = 'decimal'; inp.placeholder = ph; inp.setAttribute('aria-label', label); inp.style.width = '5.5em';
   }
+  const go = el('button', 'btn', 'Go'), fill = el('button', 'btn', 'Fill expected');
+  go.addEventListener('click', () => {
+    const az = parseFloat(azIn.value), elv = parseFloat(elIn.value), cmds = [];
+    if (azIn.value.trim()) {
+      if (!(az >= 0 && az < 360)) return setCmdResult('bad', 'Azimuth must be 0–359.9°');
+      cmds.push('AZ,' + Math.round(az * 10) % 3600);
+    }
+    if (elIn.value.trim()) {
+      if (!(elv >= 15 && elv <= 60)) return setCmdResult('bad', 'Elevation must be 15.0–60.0°');
+      cmds.push('EL,' + Math.round(elv * 10));
+    }
+    if (cmds.length) manualMove(cmds);
+  });
+  fill.addEventListener('click', () => {
+    const e = expectedPointing();
+    if (!e) return setCmdResult('warn', Object.keys(M.targets).length
+      ? 'No satellite has been named this session: press Use next to one in the Antenna targets table.'
+      : 'Needs a selected satellite, and either its TGTLOCATION reply or a GPS fix with a known longitude.');
+    if (isNum(e.el)) elIn.value = e.el.toFixed(1);
+    if (isNum(e.az)) azIn.value = e.az.toFixed(1);
+    setCmdResult('info', `Expected for ${e.sat} from ${e.source}: ` +
+                 (isNum(e.az) ? `AZ ${e.az.toFixed(1)}° ` : 'AZ unknown (press TGTLOCATION, or wait until the antenna has tracked a satellite) ') +
+                 (isNum(e.el) ? `EL ${e.el.toFixed(1)}°` : ''));
+  });
+  const row2 = el('div', 'btnrow'); row2.style.alignItems = 'center';
+  row2.append(el('span', 'small muted', 'AZ'), azIn, el('span', 'small muted', 'EL'), elIn, go, fill);
+  const pad = el('div', 'jogpad'); pad.tabIndex = 0; pad.setAttribute('aria-label', 'Jog pad: arrow keys move 0.1°');
+  const cells = { '8': 2, '4': 4, '6': 6, '2': 8 };
+  const slots = Array.from({ length: 9 }, () => el('span'));
+  const jogBtns = [];
+  for (const [step, glyph, title] of JOG) {
+    const b = el('button', 'btn', glyph); b.title = title; b.dataset.step = step;
+    b.addEventListener('click', () => jog(step));
+    slots[cells[step] - 1] = b; jogBtns.push(b);
+  }
+  const sig = el('button', 'btn', 'Signal'); sig.title = 'SIGLEVEL: report RF signal strength';
+  sig.addEventListener('click', () => sendCommand('SIGLEVEL'));
+  slots[4] = sig;
+  pad.append(...slots);
+  pad.addEventListener('keydown', e => {
+    const step = { ArrowUp: '8', ArrowDown: '2', ArrowLeft: '4', ArrowRight: '6' }[e.key];
+    if (!step) return;
+    e.preventDefault();
+    if (!e.repeat) jog(step);
+  });
+  const readAfter = el('input'); readAfter.type = 'checkbox'; readAfter.checked = store.get('readAfter', true);
+  readAfter.addEventListener('change', () => store.set('readAfter', readAfter.checked));
+  const lab = el('label', 'check'); lab.append(readAfter, document.createTextNode(' Read signal after each move'));
+  const tgt = el('button', 'btn', 'TGTLOCATION'); tgt.title = 'Report target location';
+  tgt.addEventListener('click', () => sendCommand('TGTLOCATION'));
+  const help = el('button', 'btn', 'HELP'); help.title = 'Antenna command list (Idle mode only)';
+  help.addEventListener('click', () => sendCommand('HELP'));
+  const readout = el('div', 'sig-readout'), readLive = el('div'), readAge = el('div');
+  readLive.setAttribute('aria-live', 'polite');
+  readout.append(readLive, readAge);
+  const row3 = el('div', 'btnrow'); row3.style.margin = '10px 0 8px'; row3.style.gap = '16px'; row3.append(pad, readout);
+  const row4 = el('div', 'btnrow'); row4.style.alignItems = 'center'; row4.append(lab, tgt, help);
+  const log = el('div', 'manual-log mono'); log.setAttribute('aria-live', 'polite');
+  const grid = el('div', 'manual-grid');
+  const sigBox = el('div'), tgtBox = el('div');
+  grid.append(sigBox, tgtBox);
+  sec.append(head, row1, pos, row2, row3, row4, grid, log,
+             note('Moves are accepted only while the antenna is in Idle mode (Halt first); press Resume tracking when done. ' +
+                  'Azimuth is the antenna\'s own frame (no heading), the same as its +POS azimuth. While Idle the antenna ' +
+                  'reports no position, so the accepted AZ/EL is shown instead.'));
+  Object.assign(cmdUI, { manual: { state, halt, track, pos, azIn, elIn, go, fill, jogBtns, sig, tgt, help, log, sigBox, tgtBox,
+                                   readout, readLive, readAge, readKey: null, sigKey: null, tgtKey: null }, readAfter });
+  return sec;
+}
+function renderSigReadout(m) {  // the latest SIGLEVEL reading, large, next to the jog pad
+  const l = M.sig.length ? M.sig[M.sig.length - 1] : null, best = M.sigBest;
+  const key = l ? `${l.t}|${best.t}` : '';
+  if (key !== m.readKey) {  // rebuilt only for a new reading
+    m.readKey = key;
+    if (!l) m.readLive.replaceChildren(el('div', 'big', '—'), el('div', null, 'No signal reading yet.'),
+                                      el('div', null, 'Press Signal, or jog with "Read signal after each move" ticked.'));
+    else {
+      const at = isNum(l.az) ? `at AZ ${fmt(l.az, 1)}° EL ${fmt(l.el, 1)}°` : 'position unknown';
+      m.readLive.replaceChildren(
+        el('div', 'big', fmtInt(l.signal)),
+        el('div', null, `SIGLEVEL ${at}`),
+        el('div', null, l.signal <= 500 ? 'Noise floor: nothing here.' : `${fmtInt(l.signal - 500)} above the 500 floor.`),
+        el('div', null, best === l ? (M.sig.length > 1 ? 'Best reading so far.' : '') :
+                        `Best ${fmtInt(best.signal)}` + (isNum(best.az) ? ` at AZ ${fmt(best.az, 1)}° EL ${fmt(best.el, 1)}°` : '') +
+                        ` (${fmtClock(best.t)}).`));
+    }
+  }
+  const age = l ? `read ${fmtDur(nowT() - l.t)} ago` : '';
+  if (m.readAge.textContent !== age) m.readAge.textContent = age;
+}
+function renderManualTables(m) {
+  // SIGLEVEL readings, newest first; the strongest one is highlighted
+  const sigs = M.sig.slice(-8).reverse();
+  const sigKey = sigs.map(s => `${s.t}|${s.signal}`).join(',');
+  if (sigKey !== m.sigKey) {
+    m.sigKey = sigKey;
+    const h = el('h3', null, 'Signal readings (SIGLEVEL)');
+    if (!sigs.length) m.sigBox.replaceChildren(h, el('p', 'empty-note', 'Press Signal to read the RF signal strength at the current position (500 = noise floor).'));
+    else {
+      const best = M.sigBest ? M.sigBest.signal : -Infinity;
+      const rows = sigs.map(s => [fmtClock(s.t), fmt(s.az, 1), fmt(s.el, 1), fmtInt(s.signal) + (s.signal <= 500 ? ' (floor)' : '')]);
+      m.sigBox.replaceChildren(h, table(['Time', 'AZ °', 'EL °', 'Signal'], rows, sigs.map(s => s.signal === best && best > 500 ? 'hl' : null)));
+    }
+  }
+  // the antenna's own target positions, in its frame: exactly what a manual move needs
+  const sats = Object.keys(M.targets).sort();
+  const tgtKey = sats.map(s => `${s}|${M.targets[s].az}|${M.targets[s].el}`).join(',') + '|' + (M.state === 'Idle');
+  if (tgtKey !== m.tgtKey) {
+    m.tgtKey = tgtKey;
+    const h = el('h3', null, 'Antenna targets (TGTLOCATION)');
+    if (!sats.length) m.tgtBox.replaceChildren(h, el('p', 'empty-note', 'Press TGTLOCATION for the antenna\'s own AZ/EL of each installed satellite.'));
+    else {
+      const rows = sats.map(s => {
+        const tg = M.targets[s], use = el('button', 'btn', 'Use');
+        use.title = `Fill AZ ${fmt(tg.az, 1)}° EL ${fmt(tg.el, 1)}° into the boxes above`;
+        use.disabled = M.state !== 'Idle';
+        use.addEventListener('click', () => { m.azIn.value = tg.az.toFixed(1); m.elIn.value = tg.el.toFixed(1); m.azIn.focus(); });
+        return [s, fmt(tg.az, 1), fmt(tg.el, 1), use];
+      });
+      m.tgtBox.replaceChildren(h, table(['Satellite', 'AZ °', 'EL °', ''], rows));
+    }
+  }
+}
+function renderManual() {
+  const m = cmdUI.manual;
+  if (!m) return;
+  const connected = M.link && M.link.link === 'connected' && !M.offline, idle = M.state === 'Idle';
+  m.state.replaceChildren(dotLabel(idle ? 'warn' : M.state === 'Tracking' || M.state === 'Sleeping' ? 'good' : 'info',
+                                   `antenna ${M.state || 'state unknown'}${idle ? ': not tracking' : ''}`));
+  const p = M.pos, mp = manualPosition(), last = M.sig.length ? M.sig[M.sig.length - 1] : null;
+  if (!mp) m.pos.textContent = (idle ? 'Now: position unknown (halted before this session, and no +POS comes while Idle)' : 'Now: waiting for +POS') +
+                              (last ? `  ·  last signal ${fmtInt(last.signal)} (${fmtDur(nowT() - last.t)} ago)` : '');
+  else if (mp.commanded) {
+    m.pos.textContent = `Now: AZ ${fmt(mp.az, 1)}°  EL ${fmt(mp.el, 1)}° (accepted ${fmtDur(nowT() - mp.t)} ago)` +
+                        (last ? `  ·  last signal ${fmtInt(last.signal)} (${fmtDur(nowT() - last.t)} ago)` : '');
+  } else {
+    const stale = idle && nowT() - p.t > 10 ? ` (last +POS ${fmtDur(nowT() - p.t)} ago)` : '';
+    m.pos.textContent = `Now: AZ ${fmt(p.az, 1)}°  EL ${fmt(p.el, 1)}°${stale}  ·  SNR ${fmt(p.snr, 2)} dB  ·  RF ${fmtInt(p.rf)}` +
+                        (idle && last && last.t > p.t ? `  ·  last signal ${fmtInt(last.signal)} (${fmtDur(nowT() - last.t)} ago)` : '');
+  }
+  m.halt.disabled = !connected || idle;
+  m.track.disabled = !connected;
+  for (const b of [m.go, m.fill, ...m.jogBtns]) b.disabled = !connected || !idle;
+  for (const b of [m.sig, m.tgt, m.help]) b.disabled = !connected;
+  renderSigReadout(m);
+  renderManualTables(m);
+  // console: what we sent and what the antenna answered in the last few minutes
+  const since = nowT() - 300, lines = [];
+  for (let k = M.raw.length - 1; k >= 0 && lines.length < 24; k--) {
+    const r = M.raw[k];
+    if (r.t < since) break;
+    if (r.src === 'tx') lines.push(`${fmtClock(r.t)}  › ${r.raw}`);
+    else if (r.src === 'rx' && REPLY_KINDS.has(r.kind)) lines.push(`${fmtClock(r.t)}    ${r.raw}`);
+  }
+  const text = lines.reverse().join('\n') || 'Commands you send and the antenna\'s replies appear here.';
+  if (m.log.textContent !== text) { m.log.textContent = text; m.log.scrollTop = m.log.scrollHeight; }
 }
 function polConfirm(cmd, pol, band) {
   return `Send ${cmd}?\n\nThis switches the antenna to ${pol === 'H' ? 'horizontal' : 'vertical'} polarization, ` +
@@ -1527,7 +2085,7 @@ function polConfirm(cmd, pol, band) {
 }
 function buildCommands() {
   const h = M.hello, body = $('#cmdBody');
-  cmdUI.polBtns = []; cmdUI.queryBtns = []; cmdUI.result = null;
+  cmdUI.polBtns = []; cmdUI.queryBtns = []; cmdUI.result = null; cmdUI.manual = null; cmdUI.satSwitch = null;
   body.replaceChildren();
   if (!h) return;
   if (h.mode !== 'live') {
@@ -1574,7 +2132,9 @@ function buildCommands() {
     cmdUI.result = el('div'); cmdUI.result.id = 'cmdResult';
     const s1 = el('div', 'sec'); s1.append(polHead, polRow);
     const s2 = el('div', 'sec'); s2.append(el('h3', null, 'Queries (read-only)'), qRow, form, cmdUI.result);
-    body.append(s1, s2, note('The bridge sends only these queries and SAT,<sat>,<H|V>,<L|H> for a satellite seen in the telemetry. It refuses everything else, and never sends anything on its own.'));
+    body.append(buildSatSwitch(), s1, buildManual(), s2, note('The bridge sends only these queries, SAT,<sat>,<H|V>,<L|H> for a satellite seen in the telemetry, ' +
+      'HALT/TRACK, manual pointing while the antenna is Idle, and a switch to another satellite of the TV-Hub\'s installed group. ' +
+      'It refuses everything else (SMACK, ZAP, …) and never sends anything on its own.'));
   }
   const rc = el('button', 'btn', 'Reconnect to TV-Hub');
   rc.style.marginTop = '10px';
@@ -1594,6 +2154,71 @@ function updateCommandState() {
   }
   for (const b of cmdUI.queryBtns) b.disabled = !connected;
   if (cmdUI.send) { cmdUI.send.disabled = !connected; cmdUI.input.disabled = !connected; }
+  renderSatSwitch();
+  renderManual();
+}
+
+// ---- satellite switching: through the TV-Hub's web service, like its own "installed group" view
+let satSwitchBusy = false;
+function buildSatSwitch() {
+  const sec = el('div', 'sec'), head = el('h3', null, 'Satellite'), row = el('div', 'btnrow'), info = el('p', 'note');
+  sec.append(head, row, info);
+  cmdUI.satSwitch = { head, row, info, key: null, btns: [] };
+  return sec;
+}
+function currentSat() { return (M.web.status && (M.web.status.selected || M.web.status.sat)) || (M.pos && M.pos.sat) || null; }
+async function switchSatellite(x) {
+  const where = x.name ? `${x.id} · ${x.name}` : x.id;
+  const text = `Switch the antenna to ${where}` + (isNum(x.lon) ? ` (${lonText(x.lon)})` : '') + '?\n\n' +
+    'The TV-Hub moves the antenna and searches for it, so TV reception stops until it locks on. ' +
+    'Switch back the same way.';
+  if (!window.confirm(text)) return;
+  satSwitchBusy = true; renderSatSwitch();
+  setCmdResult('info', `Asking the TV-Hub to switch to ${where}…`);
+  try {
+    const res = await fetch('/api/satellite', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sat: x.id }) });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(j.error || 'HTTP ' + res.status);
+    setCmdResult('good', `The TV-Hub is switching to ${where}. Watch Events for the satellite change and the search.`);
+  } catch (e) {
+    setCmdResult('bad', `Not switched: ${e.message}`);
+  } finally {
+    satSwitchBusy = false; renderSatSwitch();
+  }
+}
+function renderSatSwitch() {
+  const u = cmdUI.satSwitch;
+  if (!u) return;
+  const h = M.hello, g = M.web.group, cur = currentSat();
+  const connected = M.link && M.link.link === 'connected' && !M.offline;
+  const sats = g && g.sats ? g.sats : [];
+  const key = sats.map(x => `${x.slot}|${x.id}|${x.name}`).join(',');
+  if (key !== u.key) {  // rebuilt only when the group changes, so a click is never lost to a refresh
+    u.key = key;
+    u.btns = sats.map(x => {
+      const b = el('button', 'btn', `${x.slot} · ${x.id}`);
+      b.title = (x.name || x.id) + (isNum(x.lon) ? ` · ${lonText(x.lon)}` : '');
+      b.dataset.sat = x.id;
+      b.addEventListener('click', () => { if (currentSat() !== x.id) switchSatellite(x); });
+      return b;
+    });
+    u.row.replaceChildren(...u.btns);
+  }
+  u.head.textContent = g && g.group ? `Satellite (TV-Hub group “${g.group}”)` : 'Satellite';
+  let why = '';
+  if (!h || !h.hub_web) why = 'Switching goes through the TV-Hub\'s web service, which this bridge isn\'t using (--read-only or --no-hub-web).';
+  else if (!g) why = 'Waiting for the TV-Hub\'s installed group…';
+  else if (g.enabled) why = 'Autoswitch is on, so the receivers choose the satellite.';
+  const curName = cur && satName(cur);
+  u.info.textContent = why || `Now on ${cur || '—'}${curName ? ' · ' + curName : ''}. Pick another satellite of the installed group; ` +
+    'the TV-Hub switches as it does from its own Satellites page (no reinstall).';
+  for (const b of u.btns) {
+    const on = b.dataset.sat === cur;
+    b.setAttribute('aria-pressed', String(on));
+    b.disabled = !connected || !!why || satSwitchBusy;
+    const n = satName(b.dataset.sat);
+    b.textContent = `${b.textContent.split(' · ')[0]} · ${b.dataset.sat}${n ? ' · ' + n : ''}`;
+  }
 }
 
 // ============================================================ header
@@ -1665,8 +2290,9 @@ function frame() {
     if (pendEv.length) { for (const e of pendEv) if (evGroups[e.grp]) evView.push(e); pendEv = []; evList.refresh(); }
     if (pendRaw.length) { for (const r of pendRaw) if (rawMatch(r)) rawView.push(r); pendRaw = []; rawList.refresh(); $('#rawCount').textContent = rawCountText(); }
     dirty.add('chart').add('tiles').add('header').add('table');
-    if (performance.now() - lastCards > 1000) dirty.add('cards');
+    if (performance.now() - lastCards > 1000) dirty.add('cards'); else dirty.add('manual');
   }
+  if (dirty.has('manual') && !dirty.has('cards')) renderManual();  // replies to manual pointing show up at once
   if (dirty.has('header')) renderHeader();
   if (dirty.has('tiles')) renderTiles();
   if (dirty.has('cards')) { lastCards = performance.now(); renderSatCard(); renderSearchCard(); renderHealthCard(); updateCommandState(); }
@@ -1687,6 +2313,22 @@ setInterval(() => {
 }, 1000);
 
 // ============================================================ connection to the bridge
+// This page is read from disk on every load, but the bridge only changes when it is restarted.
+// Keep BRIDGE_API in step with tvhub_server.py; the hello tells us what the running bridge has.
+const BRIDGE_API = 2;
+function renderBridgeBanner(h) {
+  const box = $('#bridgeBanner');
+  let text = null;
+  if (!h.api || h.api < BRIDGE_API) {
+    text = 'This page is newer than the bridge that is running. Stop tvhub_server.py (Ctrl+C in its window), start it again, ' +
+           'then reload this page. Until then the bridge refuses the newer commands, such as Halt and manual pointing.';
+  } else if (h.code_changed) {
+    text = 'tvhub_server.py or tvhub_parser.py changed on disk after the bridge started. Restart tvhub_server.py and reload ' +
+           'this page to pick up the change.';
+  }
+  box.hidden = !text;
+  if (text) box.replaceChildren(el('span', 'dot warn'), el('span', null, text));
+}
 function connect() {
   const es = new EventSource('/api/events');
   es.addEventListener('hello', e => {
@@ -1700,6 +2342,7 @@ function connect() {
     M.session = h.session; M.hello = h; M.link = h.status; M.offline = false; M.ready = false;
     buildCommands();
     syncTargetForm();
+    renderBridgeBanner(h);
     mark('header', 'cards');
   });
   es.addEventListener('backlog', e => { for (const r of JSON.parse(e.data)) ingest(r); mark('data'); });
