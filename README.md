@@ -30,7 +30,9 @@ Type the dish's TV-Hub address in the **Dish IP** box at the top of the page and
 Connect. A new address starts a fresh session (the old dish's history and satellites are
 dropped) and is saved to `tvhub_config.json`, so the next launch reconnects there.
 `--host` on the command line overrides the saved address for one run. The default is
-192.168.50.214.
+192.168.50.214. Connected straight to the hub instead of through a router, it is
+172.16.0.1 over the hub's own Wi-Fi (when enabled) or 169.254.253.1 on its LAN port. Both
+can be changed in the hub's web interface.
 
 ### Open it from other devices
 
@@ -119,6 +121,11 @@ it.
   - search and sleep parameters, supply rails, boot self-tests, versions and GPS
 - **Raw stream:** every line with the parser's classification. Unparsed lines are
   highlighted so new line types stand out.
+- **Band scan** (bottom of the page): **Start scan** and **Stop**, then a progress bar
+  showing the MHz being tried, the range, polarization/band and LO, time left, and the
+  carriers found. The table fills in as each carrier locks and is replaced by the antenna's
+  own final list at the end. It shows frequency, symbol rate, FEC, modulation, network ID,
+  the orbital position each transponder reports, power and SNR.
 
 ## Commands (allowlist)
 
@@ -151,14 +158,36 @@ sends only:
   latest reading is shown large next to the jog pad and in the RF tile, and every reading
   is a dot on the RF, elevation and azimuth strip charts (hover one for its value and
   position).
+- **Skew, only while Idle:** `SKEW,<-900-900>` (tenths of a degree), for peaking the
+  polarization by hand with `SIGLEVEL`. It has a box next to AZ/EL, and step buttons
+  (−1°, −0.1°, +0.1°, +1°, or `[` `]` and `{` `}` on the jog pad). The antenna has no skew
+  step command, so a step sends `SKEW,<current ± step>`, starting from the last skew the
+  antenna reported or accepted. The signal readings table records the skew of each reading.
+- **Point at any satellite:** enter an orbital position (such as `169.0E`, or pick one of the
+  hub's satellites) and its pre-skew, then press **Calculate**. It fills the AZ, EL and Skew
+  boxes with the antenna-frame direction, and you press Go. The dome's azimuth offset (the
+  TV6 has no heading input) and a small elevation offset are learned while it tracks any
+  satellite and remembered in the browser. Skew is the computed polarization angle minus the
+  pre-skew, which matches the antenna's own `+POS` skew.
+- **Position reports:** `AZ`, `EL` and `SKEW` on their own report the current angles. They
+  are behind **Read position**, which is handy while Idle, when the antenna sends no `+POS`.
+- **Band scan, only while Idle:** `@SCAN`. The RF board steps through the current band and
+  polarization and lists every transponder it can decode, with its frequency, symbol rate,
+  FEC, network ID, the orbital position it reports, power and SNR. **Band scan** sends
+  `DEBUGON` first, which the scan needs, and shows the list as a table.
 
 The page is read from disk every time it loads, but the bridge only changes when it is
 restarted. If the page is newer than the running bridge (or the bridge's code changed on
 disk after it started), a banner at the top asks you to restart `tvhub_server.py`.
 
-It refuses everything else (`SMACK`, `ZAP`, `CLEAREE`, `=CAL…`, `@SAVE`, …) and logs the
-refusal. The limit is two commands per second, and nothing is sent except in response to a
-click. The web server listens on 127.0.0.1 only and rejects cross-site requests.
+It refuses everything else (`SMACK`, `ZAP`, `CLEAREE`, `=CAL…`, `@SAVE`, `ANTLNB,…` LNB
+changes, …) and logs the refusal. The limit is two commands per second, and nothing is sent
+except in response to a click. The web server listens on 127.0.0.1 only (unless started
+with `--lan`) and rejects cross-site requests.
+
+The antenna can also switch between the satellites of an installed group with `@L,A` (or
+`B`, `C`, `D`). The monitor switches through the TV-Hub instead (see below), so that the
+hub knows which satellite is in use.
 
 `HELP` only answers in Idle mode. `SMACK` resets the antenna's satellite data and GPS; never
 send it.
@@ -175,6 +204,9 @@ the serial number blanked.
 - `samples/sat-change.log`: USER6I edited on the TV-Hub. The checksum mismatch starts a
   reinstall and restart. The antenna then re-acquires on vertical, and the sidelobe check
   confirms the main beam.
+- `samples/band-scan.log`: a band scan (`@SCAN`) of IS-19 horizontal, low band, taken with
+  the antenna halted. It shows the banner, one line per MHz, a lock block for each carrier
+  found, and the final table (12446 and 12607 MHz, both reporting 166.0E).
 
 ## Parser CLI
 

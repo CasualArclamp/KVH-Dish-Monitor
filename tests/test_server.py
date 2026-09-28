@@ -19,8 +19,10 @@ from tvhub_server import (App, CommandRejected, RequestRefused, make_server, val
 SAMPLE_LOG = os.path.join(ROOT, "samples", "pol-switch.log")
 FORBIDDEN = ["ZAP", "SMACK", "CLEAREE", "@CLEAREE", "=CAL", "=CALAZ", "@SAVE", "=TV", "=TVMODE", "DEBUGOFF",
              "SATINSTALL,USER6I", "SATCK,166EN,F1", "SAT,166EN,V", "SAT,166EN,X,L", "SAT,166EN,V,L,X",
-             "STATE\r\nZAP", "STATE ZAP", "THRESHOLD", "SKEW", "ANTLNB,19-0864 AUST DUA", "", "   ",
-             "5", "88", "2 ", "AZ,3600", "AZ,-1", "AZ,", "AZ,60,1", "AZ,12345", "EL,149", "EL,601", "EL,57.7"]
+             "STATE\r\nZAP", "STATE ZAP", "THRESHOLD", "ANTLNB,19-0864 AUST DUA", "", "   ",
+             "ANTLNB,19-0444 Linear U,L,13/18V,10600,N,ON,9750,N,OFF", "@L,A", "@L,D", "SCAN", "@SCAN,1",
+             "5", "88", "2 ", "AZ,3600", "AZ,-1", "AZ,", "AZ,60,1", "AZ,12345", "EL,149", "EL,601", "EL,57.7",
+             "SKEW,901", "SKEW,-901", "SKEW,", "SKEW,--5", "SKEW,1.5"]
 
 
 def wait_for(pred, timeout=5.0):
@@ -95,7 +97,7 @@ class AllowlistTests(unittest.TestCase):
                 validate_command(cmd, {"166EN", "USER6I"})
 
     def test_help_queries_and_control(self):
-        for cmd in ("help", "TGTLOCATION", "siglevel", "HALT", "track", "debugon"):
+        for cmd in ("help", "TGTLOCATION", "siglevel", "HALT", "track", "debugon", "az", "EL", "skew", "@scan"):
             self.assertEqual(validate_command(cmd, set()), cmd.upper())
 
     def test_manual_pointing(self):
@@ -104,6 +106,9 @@ class AllowlistTests(unittest.TestCase):
         self.assertEqual(validate_command("AZ,0", set()), "AZ,0000")
         self.assertEqual(validate_command("EL,577", set()), "EL,577")
         self.assertEqual(validate_command("EL,150", set()), "EL,150")
+        self.assertEqual(validate_command("skew,-228", set()), "SKEW,-228")
+        self.assertEqual(validate_command("SKEW,5", set()), "SKEW,005")
+        self.assertEqual(validate_command("SKEW,-900", set()), "SKEW,-900")
         for step in ("2", "4", "6", "8"):
             self.assertEqual(validate_command(step, set()), step)
 
@@ -145,20 +150,24 @@ class LiveBridgeTests(unittest.TestCase):
                         repr(self.fake.received))
 
     def test_manual_moves_need_idle(self):
-        with self.assertRaises(CommandRejected) as ctx:
-            self.app.send_command("8")  # still tracking
-        self.assertEqual(ctx.exception.status, 409)
+        for cmd in ("8", "SKEW,-228", "@SCAN", "QUIT", "@DEBUGON"):  # still tracking
+            with self.subTest(cmd=cmd), self.assertRaises(CommandRejected) as ctx:
+                self.app.send_command(cmd)
+            self.assertEqual(ctx.exception.status, 409)
         self.fake.send_line("+STATE: Idle")
         self.assertTrue(wait_for(lambda: self.app.hub.antenna_state == "Idle"))
         self.assertEqual(self.app.send_command("az,60"), "AZ,0060")
         time.sleep(0.55)
         self.assertEqual(self.app.send_command("8"), "8")
+        time.sleep(0.55)
+        self.assertEqual(self.app.send_command("@scan"), "@SCAN")
         self.fake.send_line(">STATE: Searching")
         self.assertTrue(wait_for(lambda: self.app.hub.antenna_state == "Searching"))
         time.sleep(0.55)
         with self.assertRaises(CommandRejected):
             self.app.send_command("EL,577")
-        self.assertTrue(wait_for(lambda: self.fake.received == b"AZ,0060\r\n8\r\n"), repr(self.fake.received))
+        self.assertEqual(self.app.send_command("az"), "AZ")  # a position report is fine in any state
+        self.assertTrue(wait_for(lambda: self.fake.received == b"AZ,0060\r\n8\r\n@SCAN\r\nAZ\r\n"), repr(self.fake.received))
 
     def test_rate_limit(self):
         self.app.send_command("STATE")

@@ -17,8 +17,10 @@ Commands from the GUI are checked here against an explicit allowlist:
 - switching to another satellite of the TV-Hub's installed group, through its web service
   (select_satellite, install=N; see tvhub_webservice.py), only while autoswitch is off
 - HALT, TRACK and DEBUGON (the antenna refuses TRACK until DEBUGON after a reboot)
-- manual pointing (AZ,<0-3599>, EL,<150-600>, the 0.1-degree steps 2/4/6/8), accepted
-  only while the antenna reports Idle
+- AZ, EL and SKEW on their own, which report the current angles
+- manual pointing (AZ,<0-3599>, EL,<150-600>, SKEW,<-900-900>, the 0.1-degree steps
+  2/4/6/8) and the band scan @SCAN (with @DEBUGON, which the RF board needs first, and
+  QUIT to stop it), accepted only while the antenna reports Idle
 Nothing else is ever sent (SMACK, ZAP, CLEAREE, =CAL... are refused), and nothing is sent
 except in response to a click in the GUI.
 """
@@ -57,15 +59,23 @@ DEFAULT_HOST, DEFAULT_PORT = "192.168.50.214", 50001
 QUERY_COMMANDS = (
     "STATE", "SAT", "SATINSTALL", "VERSION", "GPS", "HOURS", "STATUS", "ANTLNB", "SIDELOBE",
     "SLEEP", "SEARCHTIMEOUT", "HW", "@VER", "@FPGAVER", "=SERNUM", "HELP", "TGTLOCATION", "SIGLEVEL",
+    "AZ", "EL", "SKEW",  # on their own these report the current angle (KVH's command notes)
 )
 # HALT stops acquisition/tracking and enters Idle mode; TRACK resumes (both seen in use).
 # After a reboot the antenna answers TRACK with "TRACK requires Debug mode." until it gets
 # DEBUGON (seen in the captures; it only turns on extra diagnostic lines and is idempotent).
 CONTROL_COMMANDS = ("HALT", "TRACK", "DEBUGON")
-# Manual pointing, from HELP. Only allowed while the antenna reports Idle.
+# Manual pointing, from HELP and KVH's command notes. Only allowed while the antenna reports Idle.
 JOG_COMMANDS = {"8": "EL +0.1°", "2": "EL −0.1°", "6": "AZ +0.1° (CW)", "4": "AZ −0.1° (CCW)"}
-_RE_MANUAL = re.compile(r"^(AZ|EL),(\d{1,4})$")
-MANUAL_LIMITS = {"AZ": (0, 3599, 4), "EL": (150, 600, 3)}  # tenths of a degree, and field width
+_RE_MANUAL = re.compile(r"^(AZ|EL|SKEW),(-?\d{1,4})$")
+# tenths of a degree, and field width. EL is the TV6's own HELP range (the generic notes allow
+# more); skew is kept to +-90 deg, the whole range a linear polarization can need.
+MANUAL_LIMITS = {"AZ": (0, 3599, 4), "EL": (150, 600, 3), "SKEW": (-900, 900, 3)}
+# @SCAN: the RF board steps through the current band and polarization and lists every
+# transponder it can decode. Needs Idle (HALT) and Debug mode (DEBUGON), per KVH's notes.
+# QUIT aborts a running scan (the scan says "Type 'QUIT' to abort frequency scan"). The RF
+# board refuses SCAN ("RF: SCAN requires Debug mode.") until @DEBUGON puts it in Debug mode.
+IDLE_COMMANDS = ("@SCAN", "QUIT", "@DEBUGON")
 _RE_SAT_SET = re.compile(r"^SAT,([A-Z0-9]{1,12}),([HV]),([LH])$")
 # Records whose "sat" field names a satellite the antenna knows about.
 _SAT_KINDS = {"pos", "rf_freq", "rf_satconfig", "rf_satinstall", "rf_select", "sat_sel", "satinstall",
@@ -78,7 +88,7 @@ EOLS = {"crlf": "\r\n", "lf": "\n", "cr": "\r"}
 # The GUI is read from disk on every page load, so after an update it can be newer than a
 # bridge that is still running. Bump this together with BRIDGE_API in tvhub_gui.html when
 # the GUI starts relying on something new here; the page then asks for a restart.
-BRIDGE_API = 2
+BRIDGE_API = 3
 _CODE_FILES = (os.path.abspath(__file__), os.path.join(HERE, "tvhub_parser.py"))
 
 
@@ -112,7 +122,7 @@ class CommandRejected(RequestRefused):
 def validate_command(cmd: str, known_sats: set[str]) -> str:
     """Return the normalised command if it is on the allowlist, else raise CommandRejected."""
     c = cmd.strip().upper()
-    if c in QUERY_COMMANDS or c in CONTROL_COMMANDS or c in JOG_COMMANDS:
+    if c in QUERY_COMMANDS or c in CONTROL_COMMANDS or c in JOG_COMMANDS or c in IDLE_COMMANDS:
         return c
     m = _RE_MANUAL.match(c)
     if m:
@@ -120,7 +130,8 @@ def validate_command(cmd: str, known_sats: set[str]) -> str:
         value = int(m.group(2))
         if not lo <= value <= hi:
             raise CommandRejected(f"{m.group(1)} must be {lo}-{hi} (tenths of a degree)")
-        return f"{m.group(1)},{value:0{width}d}"  # zero-padded, as in HELP's AZ,XXXX / EL,XXX
+        # zero-padded, as in HELP's AZ,XXXX / EL,XXX; a negative skew as -XXX
+        return f"{m.group(1)},{'-' if value < 0 else ''}{abs(value):0{width}d}"
     m = _RE_SAT_SET.match(c)
     if m:
         if m.group(1) not in known_sats:
@@ -129,8 +140,13 @@ def validate_command(cmd: str, known_sats: set[str]) -> str:
     raise CommandRejected("not on the allowlist")
 
 
+def needs_idle(command: str) -> bool:
+    """Commands the bridge sends only while the antenna reports Idle: moves and the band scan."""
+    return is_manual_move(command) or command in IDLE_COMMANDS
+
+
 def is_manual_move(command: str) -> bool:
-    return command in JOG_COMMANDS or command.startswith(("AZ,", "EL,"))
+    return command in JOG_COMMANDS or command.startswith(("AZ,", "EL,", "SKEW,"))
 
 
 def validate_target(host, port) -> tuple[str, int]:
@@ -652,7 +668,7 @@ class App:
         a = self.args
         info = {"session": self.hub.session, "mode": self.mode, "status": status,
                 "commands": not self.read_only, "queries": list(QUERY_COMMANDS),
-                "manual": {"jog": JOG_COMMANDS, "limits": MANUAL_LIMITS},
+                "manual": {"jog": JOG_COMMANDS, "limits": MANUAL_LIMITS, "idle": list(IDLE_COMMANDS)},
                 "api": BRIDGE_API, "started": STARTED, "code_changed": _code_fingerprint() != CODE_FINGERPRINT,
                 "hub_web": self.web is not None}
         if self.mode == "live":
@@ -672,8 +688,9 @@ class App:
             shown = re.sub(r"[^\x20-\x7e]", "?", cmd.strip())[:60]
             self.hub.note(f"refused to send {shown!r}: {e}")
             raise
-        if is_manual_move(command) and self.hub.antenna_state != "Idle":
-            reason = f"manual pointing needs Idle mode (antenna is {self.hub.antenna_state or 'unknown'}): send HALT first"
+        if needs_idle(command) and self.hub.antenna_state != "Idle":
+            what = "a band scan" if command in IDLE_COMMANDS else "manual pointing"
+            reason = f"{what} needs Idle mode (antenna is {self.hub.antenna_state or 'unknown'}): send HALT first"
             self.hub.note(f"refused to send {command!r}: {reason}")
             raise CommandRejected(reason, 409)
         with self._cmd_lock:

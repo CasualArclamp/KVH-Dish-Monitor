@@ -38,7 +38,7 @@ from datetime import datetime, timezone
 _NUM = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
 _RE_NUM_GROUP = re.compile(r"\(\?P<(\w+)>" + re.escape(_NUM) + r"\)")
 _INT_FIELDS = {"rf", "threshold", "agc", "power", "slot", "freq", "sr", "lo", "idx", "search_mode", "current", "saved",
-               "signal", "antenna"}
+               "signal", "antenna", "lo_mhz", "hi_mhz"}
 
 
 def _n(name: str) -> str:
@@ -144,7 +144,33 @@ _SIMPLE_RULES = [
     ("tgt_location", "reply", r"^Target Location:\s*(?P<sat>\S+)\s*=\s*E(?P<el>\d+),\s*A(?P<az>\d+)\s*$"),
     ("malformed", "reply", r"^(?P<cmd>.+?)\s+Malformed message\s*$"),
     # The antenna's acceptance of a manual AZ,XXXX / EL,XXX command (it echoes the padded value).
-    ("manual_ack", "reply", r"^(?P<axis>AZ|EL),(?P<tenths>\d{3,4})$"),
+    ("manual_ack", "reply", r"^(?P<axis>AZ|EL|SKEW),(?P<tenths>-?\d{3,4})$"),
+    # @SCAN results (after HALT and DEBUGON): a header, then one row per decoded transponder, e.g.
+    # "1 11804 30000  12  0x0FFF 156.0E 60419 10.33 QPSK LDPC" (CODE 12 = FEC 1/2; OID INVLD = no orbital ID)
+    ("scan_header", "reply", r"^TP\s+FREQ\s+SYMB\s+CODE\s+NID\s+OID\s+PWR\s+SNR\s+TYPE\s*$"),
+    # ...and what it prints while scanning: a banner with its settings, one line per MHz, and for
+    # each carrier it locks: Normalize / Power / LOCK at time / ID's / OID's / ID / Orb Pos /
+    # Frequency / SNR / SYMB / "<mod> <coding> CR: <code>". It ends with "Peak Symbol rate scan done".
+    ("scan_start", "reply", r"^SCAN$"),
+    ("scan_range", "reply", rf"^Scan frequency:\s*{_n('lo_mhz')}\s*to\s*{_n('hi_mhz')}\s*Mhz\.?\s*$"),
+    ("scan_setting", "reply", r"^(?P<name>Decode Type search|Symbol search|Code Rate search):\s*(?P<value>.+?)\.?\s*$"),
+    ("scan_band", "reply", r"^Polarity, Band, LO:\s*(?P<pol>[HVLR]),(?P<band>[LH]),(?P<lo>\d+)\s*$"),
+    ("scan_note", "reply", r"^(?P<text>Type 'QUIT' to abort frequency scan)\s*$"),
+    ("scan_progress", "housekeeping", r"^(?P<mhz>1\d{4})$"),
+    ("scan_lock", "event", r"^Normalize ~ (?P<reason>.+)$"),
+    ("scan_found", "event", rf"^Frequency:\s*{_n('freq')}\s*Mhz\s*$"),
+    ("scan_detail", "housekeeping", r"^(?P<name>Power|LOCK at time|ID|Orb Pos|SNR|SYMB|ID's|OID's):\s*(?P<value>.+?)\s*$"),
+    ("scan_detail", "housekeeping", r"^(?P<value>(?:0x[0-9A-Fa-f]{4}\s*){2,}|(?:(?:999|\d{1,3}\.\d[EW])\s*){2,})$"),
+    ("scan_mod", "housekeeping", r"^(?P<mod>QPSK|8PSK|16APSK|32APSK)\s+(?P<coding>\w+)\s+CR:\s*(?P<code>\d{2,3})\s*$"),
+    ("scan_done", "event", r"^(?P<text>Peak Symbol rate scan done)\s*$"),
+    ("scan_none", "event", r"^(?P<text>No transponders found)\s*$"),
+    # a carrier the RF board saw but could not demodulate: "11678,19000: tone locked but no demod lock"
+    ("scan_nolock", "event", r"^(?P<freq>1\d{4}),(?P<sr>\d{1,5}):\s*(?P<text>.+?)\s*$"),
+    ("invalid_cmd", "reply", r"^Invalid command:\s*(?P<cmd>.+?)\.?\s*$"),
+    ("part_version", "boot", r"^(?P<name>SM TVRO RF)\s+REV\s+(?P<rev>\w+)\s+VER\s+(?P<version>[\d.]+)\s*$"),
+    ("scan_row", "reply",
+     r"^(?P<tp>\d{1,3})\s+(?P<freq>\d{4,5})\s+(?P<sr>\d{3,5})\s+(?P<code>\d{2,3})\s+(?P<nid>0[xX][0-9A-Fa-f]{1,4})\s+"
+     r"(?P<oid>\S+)\s+(?P<pwr>\d{1,6})\s+(?P<snr>-?\d+(?:\.\d+)?)\s+(?P<type>\S.*?)\s*$"),
     # ...and of a 0.1-degree step, as the bare digit (8/2 = EL up/down, 6/4 = AZ clockwise/counter-clockwise).
     ("jog_ack", "reply", r"^(?P<step>[2468])$"),
     ("setting", "reply", r"^\+?(?P<name>[A-Z][A-Z0-9_]*)\s*=\s*(?P<value>.+)$"),
@@ -160,7 +186,9 @@ _RE_VERSION = re.compile(
     r"^\+?KVH\s+(?P<model>.+?)\s+Rev\s+(?P<rev>\S+)\s+-\s+Version\s+(?P<version>\S+)"
     r"\s+-\s+Serial Number\s+(?P<serial>\S+)\s+-\s+SystemID\s+(?P<system_id>\S+)")
 _RE_RF_ID = re.compile(r"^([A-Z]),([^,]*),(0[xX][0-9A-Fa-f]+)$")
-_RE_ACK = re.compile(r"^\+([A-Z][A-Z0-9]{2,15})$")
+_RE_ACK = re.compile(r"^\+(@?[A-Z][A-Z0-9]{2,15})$")  # "+@DEBUGON": the RF board's acknowledgement
+_RE_BARE_RF_SELECT = re.compile(r"^S,[^,\s]+,[HVLR],[LH],[VI]$")
+_RE_NEEDS_MODE = re.compile(r"^(\S+) requires (\w+) mode\.?\s*$")
 _RE_RF_VERSION = re.compile(r"^(?P<desc>.+?)\s+REV\s+(?P<rev>\w+)\s+VER\s+(?P<version>[\d.]+)\s+SW\s+(?P<part>[\w-]+)")
 _RE_GPS_STATUS = re.compile(
     r"^\+GPS:\s*UTC:\s*(?P<utc_time>[\d.]+),\s*Lat:\s*(?P<lat>[\d.]+)(?P<ns>[NS]),\s*Long:\s*(?P<lon>[\d.]+)(?P<ew>[EW])")
@@ -172,7 +200,7 @@ KNOWN_COMMAND_WORDS = {
     "STATE", "SAT", "SATINSTALL", "SATCK", "GPS", "=SERNUM", "@VER", "VERSION", "HOURS",
     "SIDELOBE", "SLEEP", "ANTLNB", "SEARCHTIMEOUT", "@FPGAVER", "STATUS", "HW", "ZAP", "HALT",
     "CLEAREE", "@CLEAREE", "@SAVE", "HELP", "THRESHOLD", "THRESH", "@THRESHOLD",
-    "TRACK", "SMACK", "AZ", "EL", "TGTLOCATION", "SIGLEVEL", "DEBUGON", "DEBUGOFF", "SKEW",
+    "TRACK", "SMACK", "AZ", "EL", "TGTLOCATION", "SIGLEVEL", "DEBUGON", "DEBUGOFF", "SKEW", "QUIT",
 }
 _RE_LOCAL_CMD = re.compile(r"^([=@]?[A-Za-z][A-Za-z0-9]*)((?:,[^,\s]*)*)$")
 
@@ -322,6 +350,9 @@ def _parse_rf(body: str, async_: bool) -> dict:
     m = _RE_RF_ID.match(body)
     if m:
         return {**rec, "kind": "rf_id", "code": m.group(1), "text": m.group(2).strip(), "id": m.group(3)}
+    m = _RE_NEEDS_MODE.match(body)  # "RF: SCAN requires Debug mode." -> the RF board's own mode (@DEBUGON)
+    if m:
+        return {**rec, "kind": "needs_mode", "cat": "reply", "cmd": m.group(1), "mode": m.group(2), "board": "rf"}
     return {**rec, "kind": "rf_other", "text": body}
 
 
@@ -396,6 +427,8 @@ def parse_line(line: str) -> dict:
     elif s.startswith("RF:") or s.startswith("+RF:"):
         async_ = s.startswith("+")
         return _parse_rf(s[4 if async_ else 3:].strip(), async_)
+    elif _RE_BARE_RF_SELECT.match(s):  # the RF board's selection line without its "RF: " prefix (seen in Debug mode)
+        return _parse_rf(s, False)
     elif s.startswith("=>"):
         return {"kind": "echo", "cat": "command", "cmd": s[2:].strip()}
 
@@ -482,14 +515,22 @@ def parse_line(line: str) -> dict:
         except ValueError:
             pass
     if s.startswith("ANTLNB,"):
+        # ANTLNB,<lnbID>,<type C|L>,<voltage 8V|13V|18V|13/18V>,<LO1 MHz>,<LO1 conversion N|I>,<LO1 tone ON|OFF>,
+        #        <LO2 MHz|OFF>,<LO2 conversion>,<LO2 tone>   (field list from KVH's command notes)
         p = [x.strip() for x in s[7:].split(",")]
         rec = {"kind": "antlnb", "cat": "reply", "model": p[0], "fields": p[1:]}
         if len(p) >= 4:
-            rec.update(lnb_type=p[1], switching=p[2])
+            rec.update(lnb_type=p[1], switching=p[2], voltage=p[2])
             try:
                 rec["lo"] = int(p[3])
             except ValueError:
                 pass
+        if len(p) >= 9:
+            def lo(v: str):
+                return int(v) if v.isdigit() else v.upper()
+            rec.update(lnb_type_name={"C": "Circular", "L": "Linear"}.get(p[1].upper(), p[1]),
+                       lo1=lo(p[3]), lo1_convert=p[4].upper(), lo1_tone=p[5].upper(),
+                       lo2=lo(p[6]), lo2_convert=p[7].upper(), lo2_tone=p[8].upper())
         return rec
 
     for kind, cat, rx, numeric in _SIMPLE_RULES:
@@ -504,6 +545,21 @@ def parse_line(line: str) -> dict:
                 rec["value"] = int(rec.pop("tenths")) / 10
             elif kind == "jog_ack":
                 rec["axis"], rec["delta"] = _JOG_STEPS[rec["step"]]
+            elif kind == "scan_progress":
+                rec["mhz"] = int(rec["mhz"])
+            elif kind == "scan_nolock":
+                rec["freq"], rec["sr"] = int(rec["freq"]), int(rec["sr"])
+            elif kind == "scan_band":
+                rec["lo"] = int(rec["lo"])
+            elif kind == "scan_mod":
+                rec["fec"] = f"{rec['code'][0]}/{rec['code'][1:]}"
+            elif kind == "scan_row":
+                for k in ("tp", "freq", "sr", "pwr"):
+                    rec[k] = int(rec[k])
+                rec["snr"] = float(rec["snr"])
+                code = rec["code"]  # "12" -> 1/2, "910" -> 9/10
+                rec["fec"] = f"{code[0]}/{code[1:]}"
+                rec["nid"] = rec["nid"].upper().replace("0X", "0x")
             return rec
 
     m = _RE_LOCAL_CMD.match(s)
@@ -753,7 +809,8 @@ _EVENT_KINDS = {
     "note", "azel_dist", "rf_normalize", "rf_freq", "rf_satconfig", "rf_satinstall", "rf_select",
     "rf_id", "rf_lnb", "echo", "tx", "local_echo", "reply", "sat_sel", "satinstall", "unknown_cmd",
     "version", "bridge", "power_test", "limit_switch", "siglevel", "tgt_location", "malformed", "ee_locked",
-    "manual_ack", "jog_ack", "needs_mode",
+    "manual_ack", "jog_ack", "needs_mode", "scan_header", "scan_row", "scan_band", "scan_found", "scan_done",
+    "invalid_cmd",
 }
 
 

@@ -15,6 +15,7 @@ from tvhub_parser import (LineSplitter, fill_times, format_log_line, load_record
 SAMPLE_LOG = os.path.join(ROOT, "samples", "pol-switch.log")        # V/L -> lock lost -> H/L -> re-acquire
 INSTALL_LOG = os.path.join(ROOT, "samples", "install-restart.log")  # satellite install + ZAP restart
 SATCHANGE_LOG = os.path.join(ROOT, "samples", "sat-change.log")     # USER6I edited on the TV-Hub -> reinstall
+SCAN_LOG = os.path.join(ROOT, "samples", "band-scan.log")           # HALT, then @SCAN of 166EN H/L
 
 # (line, expected subset of the parsed record). Lines are from the project notes and tvhub.log.
 CASES = [
@@ -113,7 +114,10 @@ CASES = [
     ("SIDELOBE = OFF", dict(kind="setting", name="SIDELOBE", value="OFF")),
     ("SEARCHTIMEOUT=ON 12 hour limit", dict(kind="setting", name="SEARCHTIMEOUT", value="ON 12 hour limit")),
     ("ANTLNB,19-0864 AUST DUA,L,13/18V,10700,N,ON,OFF,N,OFF",
-     dict(kind="antlnb", model="19-0864 AUST DUA", lnb_type="L", switching="13/18V", lo=10700)),
+     dict(kind="antlnb", model="19-0864 AUST DUA", lnb_type="L", switching="13/18V", lo=10700, lnb_type_name="Linear",
+          voltage="13/18V", lo1=10700, lo1_convert="N", lo1_tone="ON", lo2="OFF", lo2_convert="N", lo2_tone="OFF")),
+    ("ANTLNB,19-0815 Circular,C,18V,11250,N,OFF,14350,I,OFF",
+     dict(kind="antlnb", lnb_type_name="Circular", voltage="18V", lo1=11250, lo1_tone="OFF", lo2=14350, lo2_convert="I")),
     ("Hardware Version 01", dict(kind="hw_version", version="01")),
     ("+KVH TracVision TV6 Rev J - Version 2.50 - Serial Number 000000000 - SystemID TV6SK",
      dict(kind="version", model="TracVision TV6", rev="J", version="2.50", serial="000000000", system_id="TV6SK")),
@@ -176,6 +180,17 @@ CASES = [
     ("AZ,0060", dict(kind="manual_ack", axis="AZ", value=6.0)),
     ("EL,577", dict(kind="manual_ack", axis="EL", value=57.7)),
     ("AZ,60", dict(kind="local_echo", cmd="AZ,60")),  # not padded: a typed command in an ncat capture
+    ("SKEW,-228", dict(kind="manual_ack", axis="SKEW", value=-22.8)),
+    ("TP FREQ  SYMB  CODE  NID     OID   PWR   SNR    TYPE", dict(kind="scan_header")),
+    ("RF: SCAN requires Debug mode.", dict(kind="needs_mode", cmd="SCAN", mode="Debug", board="rf")),
+    ("+@DEBUGON", dict(kind="ack", cmd="@DEBUGON")),
+    ("11678,19000: tone locked but no demod lock", dict(kind="scan_nolock", freq=11678, sr=19000, text="tone locked but no demod lock")),
+    ("No transponders found", dict(kind="scan_none")),
+    ("S,166EN,H,L,V", dict(kind="rf_select", sat="166EN", pol="H", band="L", valid=True)),
+    ("1 11804 30000  12  0x0FFF 156.0E 60419 10.33 QPSK LDPC",
+     dict(kind="scan_row", tp=1, freq=11804, sr=30000, fec="1/2", nid="0x0FFF", oid="156.0E", pwr=60419, snr=10.33,
+          type="QPSK LDPC")),
+    ("3 12012 30000  34  0xFFFE INVLD  60665 10.12 8PSK LDPC", dict(kind="scan_row", fec="3/4", oid="INVLD")),
     ("8", dict(kind="jog_ack", axis="EL", delta=0.1)),
     ("4", dict(kind="jog_ack", axis="AZ", delta=-0.1)),
     ("5", dict(kind="unparsed")),
@@ -341,6 +356,28 @@ class SampleLogTests(unittest.TestCase):
         self.assertEqual(kinds[i + 1], ("echo", "=>SAT,166EN,V,L"))
         self.assertEqual(kinds[i + 3][0], "sat_sel")
         self.assertIn(("rf_select", "+RF: S,166EN,V,L,V"), kinds[i:i + 8])
+
+
+@unittest.skipUnless(os.path.exists(SCAN_LOG), "sample capture not present")
+class BandScanLogTests(unittest.TestCase):
+    def test_every_line_parsed(self):
+        records, _ = load_records(SCAN_LOG)
+        self.assertEqual([r["raw"] for r in records if r["kind"] == "unparsed"], [])
+
+    def test_scan_contents(self):
+        records, _ = load_records(SCAN_LOG)
+        kinds = [r["kind"] for r in records]
+        band = next(r for r in records if r["kind"] == "scan_band")
+        self.assertEqual((band["pol"], band["band"], band["lo"]), ("H", "L", 10700))
+        rng = next(r for r in records if r["kind"] == "scan_range")
+        self.assertEqual((rng["lo_mhz"], rng["hi_mhz"]), (11650, 12850))
+        self.assertGreater(kinds.count("scan_progress"), 1100)  # one line per MHz
+        self.assertEqual([r["freq"] for r in records if r["kind"] == "scan_found"], [12446, 12607])
+        rows = [r for r in records if r["kind"] == "scan_row"]
+        self.assertEqual([(r["freq"], r["sr"], r["fec"], r["oid"], r["snr"]) for r in rows],
+                         [(12446, 26700, "3/4", "166.0E", 10.55), (12607, 30000, "5/6", "166.0E", 11.72)])
+        self.assertLess(kinds.index("scan_header"), kinds.index("scan_done"))
+        self.assertEqual(next(r for r in records if r["kind"] == "invalid_cmd")["cmd"], "CAN")
 
 
 @unittest.skipUnless(os.path.exists(INSTALL_LOG), "sample capture not present")

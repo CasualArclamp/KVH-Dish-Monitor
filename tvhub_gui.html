@@ -57,6 +57,7 @@ main { padding: 16px; display: grid; gap: 16px; max-width: 1680px; margin: 0 aut
 .tile .sub { color: var(--ink-2); font-size: 12px; margin-top: 2px; min-height: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 400px); gap: 16px; align-items: start; }
 @media (max-width: 1150px) { .row2 { grid-template-columns: minmax(0, 1fr); } }
+.stack { display: grid; gap: 16px; min-width: 0; align-content: start; }
 .row3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap: 16px; align-items: start; }
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px 14px; min-width: 0; }
@@ -151,6 +152,8 @@ label.check { display: inline-flex; align-items: center; gap: 5px; font-size: 12
 .manual-grid > div { min-width: 0; flex: 1 1 200px; }
 .manual-grid table.t td, .manual-grid table.t th { padding: 2px 6px; }
 .manual-grid .btn { padding: 1px 8px; }
+.scanbar { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; margin: 6px 0 4px; }
+.scanbar > div { height: 100%; background: var(--s1); border-radius: 4px; transition: width .3s; }
 .banner { display: flex; align-items: flex-start; gap: 9px; padding: 9px 12px; border: 1px solid var(--border);
   border-left: 3px solid var(--warn); border-radius: 10px; background: var(--surface); font-size: 12.5px; }
 .banner[hidden] { display: none; }
@@ -180,6 +183,7 @@ label.check { display: inline-flex; align-items: center; gap: 5px; font-size: 12
   <div id="bridgeBanner" class="banner" role="alert" hidden></div>
   <section class="tiles" id="tiles"></section>
   <section class="row2">
+    <div class="stack">
     <div class="card" id="chartCard">
       <div class="card-head">
         <h2>Signal and pointing</h2>
@@ -206,6 +210,17 @@ label.check { display: inline-flex; align-items: center; gap: 5px; font-size: 12
         <span>Drag to zoom · double-click to reset · hairlines mark events</span>
       </div>
     </div>
+    <div class="card" id="scanCard">
+      <div class="card-head">
+        <h2>Band scan</h2>
+        <span id="scanStatus" class="small"></span>
+        <span class="grow"></span>
+        <button id="scanStart" class="btn" title="HALT first; sends DEBUGON, @DEBUGON, then @SCAN">Start scan</button>
+        <button id="scanStop" class="btn" title="QUIT: abort the running scan">Stop</button>
+      </div>
+      <div id="scanBody"></div>
+    </div>
+    </div><!-- .stack -->
     <div class="card" id="eventsCard">
       <div class="card-head"><h2>Events</h2><span class="grow"></span><div class="chips" id="evChips" role="group" aria-label="Event filters"></div></div>
       <div id="events"></div>
@@ -320,9 +335,10 @@ function newModel() {
     antcfg: new Map(), satsetup: new Map(), satck: {}, look: {}, lnbCheck: null, selftests: {}, systemId: null,
     sidelobe: null, rfSel: null, satckAsk: {}, satckAnt: {}, slotChanged: {}, hub: null,
     domeOffset: store.get('domeOffset', null),  // a property of the installation, so remembered between sessions
+    elOffset: store.get('elOffset', null), calib: store.get('calib', null),  // +POS EL minus true EL; which satellite taught them
     search: {}, sleepLimits: null, boresight: null, savedPos: null, azoffset: null, gyro: null, residue: null,
     drift: null, trackBias: null, parts: {},
-    sig: [], sigBest: null, targets: {}, cmdPos: null, lastTx: null,
+    sig: [], sigBest: null, targets: {}, cmdPos: null, lastTx: null, scan: null, scanRefused: null, skewSent: null,
     // the TV-Hub's web service, polled read-only by the bridge
     web: { status: null, power: null, versions: null, config: null, hours: null, sats: {}, params: {}, alerts: null, alertKeys: new Set(),
            group: null },  // manual pointing: SIGLEVEL readings, TGTLOCATION, position while Idle
@@ -356,13 +372,25 @@ const H = {
     T.sub.push(r.substate || ''); T.bstAz.push(NaN); T.bstEl.push(NaN); T.bst3.push(NaN);
     M.pos = r;
     M.cmdPos = null;  // a +POS is authoritative (none arrive while Idle), so any manual position is now stale
-    if (r.substate === 'TRACKSAT') {  // learn the dome's azimuth offset (no heading input) from a tracked satellite
+    if (r.substate === 'TRACKSAT') {  // learn the dome's azimuth offset (no heading input) and the EL offset from a tracked satellite
       const g = geometry(), look = M.look[r.sat];
       const trueAz = g && isNum(g.az) ? g.az : look && isNum(look.az) ? look.az : null;
+      const trueEl = g && isNum(g.el) ? g.el : look && isNum(look.el) ? look.el : null;
       if (isNum(trueAz)) {
         const d = ((r.az - trueAz) % 360 + 540) % 360 - 180;
         M.domeOffset = M.domeOffset == null ? d : M.domeOffset + 0.05 * ((((d - M.domeOffset) % 360) + 540) % 360 - 180);
-        if (isLive()) store.set('domeOffset', Math.round(M.domeOffset * 100) / 100);
+      }
+      if (isNum(trueEl) && isNum(r.el)) {
+        const d = r.el - trueEl;
+        M.elOffset = M.elOffset == null ? d : M.elOffset + 0.05 * (d - M.elOffset);
+      }
+      if (isNum(trueAz) || isNum(trueEl)) {
+        M.calib = { sat: r.sat, t };
+        if (isLive()) {
+          if (isNum(M.domeOffset)) store.set('domeOffset', Math.round(M.domeOffset * 100) / 100);
+          if (isNum(M.elOffset)) store.set('elOffset', Math.round(M.elOffset * 100) / 100);
+          store.set('calib', M.calib);
+        }
       }
     }
     if (!prev || prev.substate !== r.substate) {
@@ -505,7 +533,13 @@ const H = {
     if (/^STATE$/i.test(r.cmd) && !sentRecently('STATE', t)) return;  // the TV-Hub's own poll, every ~4 s while Idle
     ev(t, 'cmd', 'cmd', 'TV-Hub received ' + r.cmd);
   },
-  tx(r, t) { M.lastTx = { cmd: r.cmd, t }; ev(t, 'cmd', 'cmd', 'Sent ' + r.cmd); },
+  tx(r, t) {
+    M.lastTx = { cmd: r.cmd, t };
+    ev(t, 'cmd', 'cmd', 'Sent ' + r.cmd);
+    if (r.cmd === 'QUIT' && M.scan && !M.scan.done) Object.assign(M.scan, { done: true, stopped: true, t });  // scan aborted
+    const sk = /^SKEW,(-?\d+)$/.exec(r.cmd);
+    if (sk) M.skewSent = { value: parseInt(sk[1], 10) / 10, t };
+  },
   local_echo(r, t) { ev(t, 'cmd', 'cmd', 'Typed in the capture: ' + r.cmd); },
   reply(r, t) { ev(t, 'cmd', 'cmd', 'Reply: ' + r.text); },
   sat_sel(r, t) {
@@ -515,7 +549,7 @@ const H = {
   satinstall(r, t) { M.installed = r.sats || [r.sat]; ev(t, 'cmd', 'cmd', 'Installed satellites: ' + M.installed.join(', ')); },
   gps_reply(r, t) { M.gpsReply = r; ev(t, 'cmd', 'cmd', `GPS ${fmtLat(r.lat)} ${fmtLon(r.lon)} · fix ${r.fix}`); },
   unknown_cmd(r, t) { ev(t, 'warn', 'cmd', 'Unknown command: ' + r.cmd); },
-  antlnb(r, t) { M.antlnb = r; ev(t, 'cmd', 'cmd', `LNB ${r.model} · ${r.switching || ''} · LO ${r.lo ?? '?'}`); },
+  antlnb(r, t) { M.antlnb = r; ev(t, 'cmd', 'cmd', 'LNB ' + lnbText(r)); },
   hw_version(r, t) { M.hw = r.version; ev(t, 'cmd', 'cmd', 'Hardware version ' + r.version); },
   setting(r, t) { M.settings[r.name] = r; ev(t, 'cmd', 'cmd', `${r.name} = ${r.value}`); },
   version(r, t) {
@@ -591,13 +625,75 @@ const H = {
     setManualAxis(axis, v => isNum(v) ? Math.round((axis === 'az' ? wrap360(v + r.delta) : v + r.delta) * 10) / 10 : null, t);
     ev(t, 'cmd', 'cmd', `Antenna stepped ${r.axis} ${r.delta > 0 ? '+' : '−'}0.1°`);
   },
+  // ---- @SCAN: banner, one line per MHz, a block per carrier it locks, then a results table
+  scan_start(r, t) { newScan(t); },
+  scan_range(r, t) { const sc = runningScan(t, true); sc.lo_mhz = r.lo_mhz; sc.hi_mhz = r.hi_mhz; sc.t = t; },
+  scan_setting(r, t) { runningScan(t, true).settings[r.name] = r.value; },
+  scan_band(r, t) {
+    const sc = runningScan(t, true);
+    Object.assign(sc, { pol: r.pol, band: r.band, lo: r.lo, t });
+    ev(t, 'info', 'track', `Band scan started: ${r.pol}/${r.band}, LO ${r.lo}` +
+       (isNum(sc.lo_mhz) ? `, ${sc.lo_mhz}–${sc.hi_mhz} MHz` : ''), 'Scan');
+  },
+  scan_progress(r, t) { const sc = runningScan(t, !M.scan); if (sc) { sc.mhz = r.mhz; sc.t = t; } },
+  scan_lock(r, t) { const sc = runningScan(t); if (sc) { sc.pending = { lock: r.reason, t }; sc.t = t; } },
+  scan_detail(r, t) {
+    const sc = runningScan(t), c = sc && (sc.pending || sc.found[sc.found.length - 1]);
+    if (!c || !r.name) return;
+    const v = r.value;
+    if (r.name === 'Power') c.pwr = parseInt(v, 10);
+    else if (r.name === 'LOCK at time') c.lockMs = parseInt(v, 10);
+    else if (r.name === 'ID') c.nid = v;
+    else if (r.name === 'Orb Pos') c.oid = v;
+    else if (r.name === 'SNR') c.snr = parseFloat(v);
+    else if (r.name === 'SYMB') c.sr = parseInt(v, 10);
+  },
+  scan_found(r, t) {
+    const sc = runningScan(t);
+    if (!sc) return;
+    const c = sc.pending || { t };
+    c.freq = r.freq;
+    sc.found.push(c);
+    sc.t = t;
+    ev(t, 'good', 'track', `Band scan found a carrier at ${r.freq} MHz` + (c.oid ? ` (${c.oid === '999' ? 'no orbital ID' : c.oid})` : ''));
+  },
+  scan_mod(r, t) {
+    const sc = runningScan(t), c = sc && sc.found[sc.found.length - 1];
+    if (c) Object.assign(c, { mod: r.mod, coding: r.coding, fec: r.fec });
+    if (sc) sc.pending = null;
+  },
+  scan_header(r, t) { const sc = runningScan(t, true); sc.rows = []; sc.t = t; },
+  scan_row(r, t) {
+    const sc = runningScan(t, true);
+    sc.rows = sc.rows.filter(x => x.tp !== r.tp).concat([r]).sort((a, b) => a.tp - b.tp);
+    sc.t = t;
+  },
+  scan_done(r, t) {
+    const sc = runningScan(t);
+    if (!sc) return;
+    sc.done = true; sc.t = t;
+    const n = sc.rows.length || sc.found.length;
+    ev(t, n ? 'good' : 'warn', 'track', `Band scan finished: ${n} transponder${n === 1 ? '' : 's'} decoded`);
+  },
+  scan_nolock(r, t) {  // a carrier the RF board saw but could not demodulate
+    const sc = runningScan(t);
+    if (!sc) return;
+    sc.undecoded = sc.undecoded.filter(x => x.freq !== r.freq).concat([{ freq: r.freq, sr: r.sr, text: r.text, t }]);
+    sc.t = t;
+    ev(t, 'warn', 'track', `Band scan: carrier at ${r.freq} MHz (${fmtInt(r.sr)} ksym/s) but ${r.text.replace(/^tone locked but /, '')}`);
+  },
+  scan_none(r, t) { const sc = runningScan(t); if (sc) { sc.none = true; sc.t = t; } },
+  invalid_cmd(r, t) { ev(t, 'warn', 'cmd', 'Antenna: invalid command ' + r.cmd); },
   needs_mode(r, t) {
-    const hint = /^TRACK$/i.test(r.cmd) && /debug/i.test(r.mode) ? ' (Resume tracking sends DEBUGON first, so press it again)' : '';
-    ev(t, 'warn', 'cmd', `Antenna refused ${r.cmd}: it needs ${r.mode} mode${hint}`);
+    const hint = /^TRACK$/i.test(r.cmd) && /debug/i.test(r.mode) ? ' (Resume tracking sends DEBUGON first, so press it again)'
+      : /^SCAN$/i.test(r.cmd) ? ' (Start scan sends @DEBUGON first, so press it again)' : '';
+    ev(t, 'warn', 'cmd', `${r.board === 'rf' ? 'RF board' : 'Antenna'} refused ${r.cmd}: it needs ${r.mode} mode${hint}`);
+    if (/^SCAN$/i.test(r.cmd)) M.scanRefused = { t, text: `The RF board refused the scan: it needs ${r.mode} mode (@DEBUGON). Press Start scan again.` };
   },
   siglevel(r, t) {
     const p = manualPosition(), az = p && isNum(p.az) ? p.az : NaN, el = p && isNum(p.el) ? p.el : NaN;
-    const rec = { t, signal: r.signal, az, el };
+    const sk = currentSkew();
+    const rec = { t, signal: r.signal, az, el, skew: isNum(sk) ? sk : NaN };
     M.sig.push(rec);
     if (!M.sigBest || rec.signal > M.sigBest.signal) M.sigBest = rec;  // kept apart: the list below is trimmed
     if (M.sig.length > 40) M.sig.splice(0, M.sig.length - 30);
@@ -610,7 +706,7 @@ const H = {
     ev(t, 'cmd', 'cmd', `Antenna's target for ${r.sat}: AZ ${fmt(r.az, 1)}° EL ${fmt(r.el, 1)}°`);
   },
   ee_status(r, t) { ev(t, 'info', 'sys', 'EE status ' + r.text); },
-  part_version(r, t) { M.parts[r.name] = r; ev(t, 'info', 'sys', `${r.name} rev ${r.rev} v${r.version} (${r.part})`); },
+  part_version(r, t) { M.parts[r.name] = r; ev(t, 'info', 'sys', `${r.name} rev ${r.rev} v${r.version}` + (r.part ? ` (${r.part})` : '')); },
   bridge(r, t) {
     const bad = /fail|disconnect|refused|closed/i.test(r.text), good = /^connected/i.test(r.text);
     ev(t, bad ? 'warn' : good ? 'good' : 'info', 'sys', 'Bridge: ' + r.text);
@@ -693,9 +789,11 @@ function siteLatLon() {
   if (M.gpsReply && isNum(M.gpsReply.lat) && isNum(M.gpsReply.lon)) return [M.gpsReply.lat, M.gpsReply.lon];
   return null;
 }
-function satLon(name) {  // [longitude, where it came from]; SATSETUP beats a name like "166EN"
+function satLon(name) {  // [longitude, where it came from]; SATSETUP, then the TV-Hub's settings, then a name like "166EN"
   const s = name && M.satsetup.get(name);
   if (s && isNum(s.lon)) return [s.lon, 'SATSETUP'];
+  const W = M.web, h = name && (W.params[name] || W.sats[name] || (W.group && (W.group.sats || []).find(x => x.id === name)));
+  if (h && isNum(h.lon)) return [h.lon, 'the TV-Hub'];
   const m = /^(\d{1,3}(?:\.\d+)?)([EW])/i.exec(name || '');
   if (!m) return [null, null];
   const v = parseFloat(m[1]);
@@ -1572,6 +1670,20 @@ function table(headers, rows, rowClasses, wrapCols) {
   return wrap;
 }
 
+// ANTLNB fields: LO in MHz or OFF, conversion N (normal) / I (inverted), tone ON / OFF
+function loText(lo, conv, tone) {
+  if (lo == null || lo === 'OFF') return 'off';
+  return `${lo} MHz · ${conv === 'I' ? 'inverted' : 'normal'} conversion · for tone ${String(tone || '?').toLowerCase()}`;
+}
+function lnbText(a) {
+  if (a.lo1 == null) return `${a.model} · ${a.switching || ''} · LO ${a.lo ?? '?'}`;
+  return `${a.model} · ${a.lnb_type_name || a.lnb_type} · ${a.voltage} · LO1 ${a.lo1}` + (a.lo2 === 'OFF' ? ' · LO2 off' : ` · LO2 ${a.lo2}`);
+}
+function lnbBands(a) {  // which receiver band requests the LNB setting can serve
+  const on = [a.lo1_tone, a.lo2 === 'OFF' ? null : a.lo2_tone].filter(Boolean);
+  if (a.lo2 === 'OFF') return `one LO only: ${a.lo1_tone === 'ON' ? 'high band (tone on)' : 'low band (tone off)'}; the other band is invalid`;
+  return on.includes('ON') && on.includes('OFF') ? 'low (tone off) and high (tone on)' : 'check the tone settings: both LOs use the same tone';
+}
 let satParamsSel = null;  // which satellite's hub settings the Satellite card shows (null: the current one)
 function renderSatCard() {
   const f = M.freq, sel = M.sel, out = [];
@@ -1611,9 +1723,18 @@ function renderSatCard() {
   } else {
     out.push(section('SATCONFIG slots', empty('Not seen yet. The RF board prints these only at satellite install or antenna boot, so restart the antenna while this is connected to capture them.')));
   }
-  const lnbRows = [['Model', M.antlnb && M.antlnb.model], ['Switching', (M.lnb && M.lnb.switching) || (M.antlnb && M.antlnb.switching)],
-                   ['LO', (M.lnb && M.lnb.lo) != null ? M.lnb.lo + ' MHz' : M.antlnb && M.antlnb.lo != null ? M.antlnb.lo + ' MHz' : null]];
-  if (lnbRows.some(r => r[1] != null)) out.push(section('LNB', kv(lnbRows)));
+  const a = M.antlnb;
+  const lnbRows = a && a.lo1 != null ? [
+    ['LNB (antenna)', `${a.model} · ${a.lnb_type_name || a.lnb_type} · ${a.voltage}`],
+    ['LO1', loText(a.lo1, a.lo1_convert, a.lo1_tone)],
+    ['LO2', loText(a.lo2, a.lo2_convert, a.lo2_tone)],
+    ['Bands', lnbBands(a)],
+  ] : [['Model', a && a.model], ['Switching', (M.lnb && M.lnb.switching) || (a && a.switching)],
+       ['LO', (M.lnb && M.lnb.lo) != null ? M.lnb.lo + ' MHz' : a && a.lo != null ? a.lo + ' MHz' : null]];
+  if (lnbRows.some(r => r[1] != null)) {
+    out.push(section('LNB', kv(lnbRows), a && a.lo1 != null ? note('From the antenna\'s ANTLNB reply. The 22 kHz tone from the ' +
+      'receiver picks the LO: tone on selects the LO whose tone setting is ON (the high band), tone off the other.') : null));
+  }
   $('#satBody').replaceChildren(...out);
   renderSatHub();
 }
@@ -1796,7 +1917,7 @@ function renderHealthCard() {
                  Object.entries(M.selftests).map(([k, v]) => `${k} ${v}`).join(' · ')) : null],
     ['LNB voltage check', M.lnbCheck ? dotLabel(M.lnbCheck.ok ? 'good' : 'warn',
       `expected ${fmt(M.lnbCheck.expected, 1)} V, actual ${fmt(M.lnbCheck.actual, 1)} V · ${fmtClock(M.lnbCheck.t)}`) : null],
-    ...Object.values(M.parts).map(pv => [pv.name, `rev ${pv.rev} v${pv.version} (${pv.part})` + (pv.rest ? ' ' + pv.rest : '')]),
+    ...Object.values(M.parts).map(pv => [pv.name, `rev ${pv.rev} v${pv.version}` + (pv.part ? ` (${pv.part})` : '') + (pv.rest ? ' ' + pv.rest : '')]),
     ['Gyro bias (new)', M.gyro ? `AZ ${fmt(M.gyro.az, 2)} EL ${fmt(M.gyro.el, 2)}` : null],
     ['Drift', M.drift ? `OR ${M.drift.drift.toExponential(2)} · AZ ${M.drift.az_corr.toExponential(2)} · EL ${M.drift.el_corr.toExponential(2)}` : null],
   ])));
@@ -1865,18 +1986,41 @@ const JOG = [['8', '▲', 'Elevation up 0.1°'], ['4', '◀', 'Azimuth −0.1° 
              ['6', '▶', 'Azimuth +0.1° (clockwise)'], ['2', '▼', 'Elevation down 0.1°']];
 const REPLY_KINDS = new Set(['unparsed', 'reply', 'help_entry', 'needs_mode', 'setting', 'ack', 'sat_error', 'unknown_cmd',
                              'version', 'gps_reply', 'hw_version', 'antlnb', 'sat_sel', 'satinstall', 'local_echo',
-                             'siglevel', 'tgt_location', 'manual_ack', 'jog_ack', 'malformed', 'ee_locked']);
+                             'siglevel', 'tgt_location', 'manual_ack', 'jog_ack', 'malformed', 'ee_locked',
+                             'scan_header', 'scan_row', 'scan_band', 'scan_found', 'scan_done', 'invalid_cmd']);
 const sentRecently = (cmd, t) => !!M.lastTx && M.lastTx.cmd === cmd && t - M.lastTx.t < 5;
 function setManualAxis(axis, f, t) {  // update one axis of the accepted manual position, starting from where the dish is
   const p = manualPosition();
-  const next = { az: p ? p.az : null, el: p ? p.el : null, t };
+  const next = { az: p ? p.az : null, el: p ? p.el : null, skew: p ? p.skew : null, t };
   next[axis] = f(next[axis]);
   M.cmdPos = next;
 }
 function manualPosition() {  // where the dish is pointing: the last accepted manual AZ/EL while Idle, else the last +POS
   const p = M.pos, c = M.cmdPos;
-  if (M.state === 'Idle' && c && (!p || c.t >= p.t)) return { az: c.az ?? (p ? p.az : null), el: c.el ?? (p ? p.el : null), t: c.t, commanded: true };
-  return p ? { az: p.az, el: p.el, t: p.t, commanded: false } : null;
+  if (M.state === 'Idle' && c && (!p || c.t >= p.t)) {
+    return { az: c.az ?? (p ? p.az : null), el: c.el ?? (p ? p.el : null), skew: c.skew ?? (p ? p.skew : null), t: c.t, commanded: true };
+  }
+  return p ? { az: p.az, el: p.el, skew: p.skew, t: p.t, commanded: false } : null;
+}
+// Skew has no 0.1° step command like 8/2/4/6, so a step is SKEW,<current + step>. The base is the
+// newest of: the skew the antenna accepted (its echo), the last SKEW sent, the last +POS skew.
+function currentSkew() {
+  const c = [], p = M.pos, mp = manualPosition();
+  if (mp && mp.commanded && isNum(mp.skew)) c.push([mp.t, mp.skew]);
+  if (M.skewSent) c.push([M.skewSent.t, M.skewSent.value]);
+  if (p && isNum(p.skew)) c.push([p.t, p.skew]);
+  c.sort((a, b) => b[0] - a[0]);
+  return c.length ? c[0][1] : null;
+}
+let lastSkewStep = 0;
+function skewStep(delta) {
+  const now = Date.now(), cur = currentSkew();
+  if (now - lastSkewStep < 600 || M.state !== 'Idle') return;
+  if (!isNum(cur)) return setCmdResult('warn', 'Current skew unknown: press Read position, or set a skew in the box and press Go.');
+  const next = Math.round((cur + delta) * 10) / 10;
+  if (next < -90 || next > 90) return setCmdResult('warn', 'Skew is limited to −90…90°.');
+  lastSkewStep = now;
+  manualMove(['SKEW,' + Math.round(next * 10)]);
 }
 let lastJog = 0;
 let readTimer = 0;
@@ -1893,6 +2037,27 @@ function jog(step) {
   manualMove([step]);
 }
 function wrap360(v) { return ((v % 360) + 360) % 360; }
+// The antenna frame differs from true bearings: AZ by the dome offset (no heading input) and EL by
+// a small offset, both learned while tracking. Skew needs no correction (+POS skew matches the
+// computed skew), only the satellite's pre-skew: antenna skew = computed skew - pre-skew.
+function elOffsetNow() { return isNum(M.elOffset) ? M.elOffset : POS_EL_OFFSET; }
+function calibratedPointing(satLonDeg, preskew = 0) {
+  const site = siteLatLon();
+  if (!site) return { error: 'Needs a GPS fix ($GPRMC status A) first.' };
+  const la = lookAngles(site[0], site[1], satLonDeg);
+  let skew = la.skew - (isNum(preskew) ? preskew : 0);
+  while (skew > 90) skew -= 180;
+  while (skew < -90) skew += 180;
+  return { trueAz: la.az, trueEl: la.el, geoSkew: la.skew, skew, azOff: isNum(M.domeOffset) ? M.domeOffset : null, elOff: elOffsetNow(),
+           az: isNum(M.domeOffset) ? wrap360(la.az + M.domeOffset) : null, el: la.el + elOffsetNow() };
+}
+function parseOrbital(text) {  // "169", "169.0E", "30W", "-30", "172.00E Eutelsat 172B" -> degrees east, or null
+  const m = /^\s*(-?\d{1,3}(?:\.\d+)?)\s*°?\s*([EW])?/i.exec(text || '');
+  if (!m) return null;
+  let v = parseFloat(m[1]);
+  if (m[2] && m[2].toUpperCase() === 'W') v = -Math.abs(v);
+  return v >= -180 && v <= 180 ? v : null;
+}
 function expectedPointing() {  // where the selected satellite should appear, in the antenna's own frame
   const sat = (M.pos && M.pos.sat) || (M.freq && M.freq.sat) || (M.sel && M.sel.sat);
   if (!sat) return null;
@@ -1903,7 +2068,7 @@ function expectedPointing() {  // where the selected satellite should appear, in
   const look = M.look[sat];
   const az = isNum(g.az) ? g.az : look && isNum(look.az) ? look.az : null;
   const el = isNum(g.el) ? g.el : look && isNum(look.el) ? look.el : null;
-  return { sat, el: isNum(el) ? el + POS_EL_OFFSET : null, source: 'the GPS fix and orbit geometry',
+  return { sat, el: isNum(el) ? el + elOffsetNow() : null, source: 'the GPS fix and orbit geometry',
            az: isNum(az) && isNum(M.domeOffset) ? wrap360(az + M.domeOffset) : null };
 }
 function buildManual() {
@@ -1918,8 +2083,9 @@ function buildManual() {
   track.addEventListener('click', async () => { if (await sendCommand('DEBUGON')) sendCommand('TRACK'); });
   const row1 = el('div', 'btnrow'); row1.append(halt, track);
   const pos = el('div', 'small muted'); pos.style.margin = '8px 0';
-  const azIn = el('input'); const elIn = el('input');
-  for (const [inp, label, ph] of [[azIn, 'Azimuth in degrees (antenna frame)', '0–359.9'], [elIn, 'Elevation in degrees', '15–60']]) {
+  const azIn = el('input'); const elIn = el('input'); const skIn = el('input');
+  for (const [inp, label, ph] of [[azIn, 'Azimuth in degrees (antenna frame)', '0–359.9'], [elIn, 'Elevation in degrees', '15–60'],
+                                  [skIn, 'Skew in degrees', '−90–90']]) {
     inp.type = 'text'; inp.inputMode = 'decimal'; inp.placeholder = ph; inp.setAttribute('aria-label', label); inp.style.width = '5.5em';
   }
   const go = el('button', 'btn', 'Go'), fill = el('button', 'btn', 'Fill expected');
@@ -1932,6 +2098,11 @@ function buildManual() {
     if (elIn.value.trim()) {
       if (!(elv >= 15 && elv <= 60)) return setCmdResult('bad', 'Elevation must be 15.0–60.0°');
       cmds.push('EL,' + Math.round(elv * 10));
+    }
+    const sk = parseFloat(skIn.value.replace('−', '-'));
+    if (skIn.value.trim()) {
+      if (!(sk >= -90 && sk <= 90)) return setCmdResult('bad', 'Skew must be −90.0–90.0°');
+      cmds.push('SKEW,' + Math.round(sk * 10));
     }
     if (cmds.length) manualMove(cmds);
   });
@@ -1946,8 +2117,37 @@ function buildManual() {
                  (isNum(e.az) ? `AZ ${e.az.toFixed(1)}° ` : 'AZ unknown (press TGTLOCATION, or wait until the antenna has tracked a satellite) ') +
                  (isNum(e.el) ? `EL ${e.el.toFixed(1)}°` : ''));
   });
+  // Point at any satellite: its orbital position and pre-skew -> calibrated AZ/EL/skew in the boxes above
+  const orbIn = el('input'), preIn = el('input'), calc = el('button', 'btn', 'Calculate'), calcOut = el('p', 'note');
+  orbIn.type = 'text'; orbIn.placeholder = 'e.g. 169.0E'; orbIn.style.width = '11em'; orbIn.setAttribute('aria-label', 'Orbital position');
+  orbIn.setAttribute('list', 'satPositions');
+  preIn.type = 'text'; preIn.inputMode = 'decimal'; preIn.placeholder = '0'; preIn.style.width = '4.5em';
+  preIn.setAttribute('aria-label', 'Pre-skew in degrees');
+  const satList = el('datalist'); satList.id = 'satPositions';
+  const calculate = () => {
+    const lonDeg = parseOrbital(orbIn.value), pre = preIn.value.trim() ? parseFloat(preIn.value.replace('−', '-')) : 0;
+    if (lonDeg == null) return (calcOut.textContent = 'Enter an orbital position such as 169.0E or 30W.');
+    if (!isNum(pre) || Math.abs(pre) > 90) return (calcOut.textContent = 'Pre-skew must be between −90 and 90°.');
+    const r = calibratedPointing(lonDeg, pre);
+    if (r.error) return (calcOut.textContent = r.error);
+    if (r.trueEl < 0) return (calcOut.textContent = `${lonText(lonDeg)} is below the horizon from here (EL ${fmt(r.trueEl, 1)}°).`);
+    if (isNum(r.az)) azIn.value = r.az.toFixed(1);
+    elIn.value = r.el.toFixed(1); skIn.value = r.skew.toFixed(1);
+    const c = M.calib;
+    calcOut.textContent = `${lonText(lonDeg)}: true AZ ${fmt(r.trueAz, 1)}° EL ${fmt(r.trueEl, 1)}°, skew ${fmt(r.geoSkew, 1)}°` +
+      (pre ? ` − pre-skew ${fmt(pre, 1)}°` : '') + ` → antenna AZ ${isNum(r.az) ? fmt(r.az, 1) + '°' : 'unknown'} EL ${fmt(r.el, 1)}° skew ${fmt(r.skew, 1)}°. ` +
+      (isNum(r.azOff) ? `Calibration AZ ${r.azOff >= 0 ? '+' : '−'}${fmt(Math.abs(r.azOff), 1)}°, EL ${r.elOff >= 0 ? '+' : '−'}${fmt(Math.abs(r.elOff), 1)}°` +
+                        (c ? `, learned while tracking ${c.sat} (${fmtClock(c.t)})` : '') + '.'
+                      : 'The AZ calibration is learned while the antenna tracks a satellite; until then only EL and skew are filled in.') +
+      (r.el < 15 || r.el > 60 ? ' Outside the TV6\'s 15–60° elevation range.' : ' Press Go to move there.');
+  };
+  calc.addEventListener('click', calculate);
+  orbIn.addEventListener('keydown', e => { if (e.key === 'Enter') calculate(); });
+  preIn.addEventListener('keydown', e => { if (e.key === 'Enter') calculate(); });
+  const rowPoint = el('div', 'btnrow'); rowPoint.style.alignItems = 'center'; rowPoint.style.marginTop = '8px';
+  rowPoint.append(el('span', 'small muted', 'Point at'), orbIn, el('span', 'small muted', 'Pre-skew'), preIn, calc, satList);
   const row2 = el('div', 'btnrow'); row2.style.alignItems = 'center';
-  row2.append(el('span', 'small muted', 'AZ'), azIn, el('span', 'small muted', 'EL'), elIn, go, fill);
+  row2.append(el('span', 'small muted', 'AZ'), azIn, el('span', 'small muted', 'EL'), elIn, el('span', 'small muted', 'Skew'), skIn, go, fill);
   const pad = el('div', 'jogpad'); pad.tabIndex = 0; pad.setAttribute('aria-label', 'Jog pad: arrow keys move 0.1°');
   const cells = { '8': 2, '4': 4, '6': 6, '2': 8 };
   const slots = Array.from({ length: 9 }, () => el('span'));
@@ -1962,11 +2162,24 @@ function buildManual() {
   slots[4] = sig;
   pad.append(...slots);
   pad.addEventListener('keydown', e => {
+    const sk = { '[': -0.1, ']': 0.1, '{': -1, '}': 1 }[e.key];
+    if (sk) { e.preventDefault(); if (!e.repeat) skewStep(sk); return; }
     const step = { ArrowUp: '8', ArrowDown: '2', ArrowLeft: '4', ArrowRight: '6' }[e.key];
     if (!step) return;
     e.preventDefault();
     if (!e.repeat) jog(step);
   });
+  pad.setAttribute('aria-label', 'Jog pad: arrow keys move 0.1°; [ and ] step skew 0.1°, { and } 1°');
+  const skewBtns = [], skewRow = el('div', 'btnrow'); skewRow.style.alignItems = 'center';
+  const skewNow = el('span', 'small muted');
+  skewRow.append(el('span', 'small muted', 'Skew'));
+  for (const [d, label] of [[-1, '−1°'], [-0.1, '−0.1°'], [0.1, '+0.1°'], [1, '+1°']]) {
+    const b = el('button', 'btn', label);
+    b.title = `Skew ${label}: sends SKEW,<current ${d > 0 ? '+' : '−'} ${Math.abs(d)}°>` + (Math.abs(d) < 1 ? ` (the ${d > 0 ? ']' : '['} key on the jog pad)` : '');
+    b.addEventListener('click', () => skewStep(d));
+    skewBtns.push(b); skewRow.append(b);
+  }
+  skewRow.append(skewNow);
   const readAfter = el('input'); readAfter.type = 'checkbox'; readAfter.checked = store.get('readAfter', true);
   readAfter.addEventListener('change', () => store.set('readAfter', readAfter.checked));
   const lab = el('label', 'check'); lab.append(readAfter, document.createTextNode(' Read signal after each move'));
@@ -1977,18 +2190,26 @@ function buildManual() {
   const readout = el('div', 'sig-readout'), readLive = el('div'), readAge = el('div');
   readLive.setAttribute('aria-live', 'polite');
   readout.append(readLive, readAge);
-  const row3 = el('div', 'btnrow'); row3.style.margin = '10px 0 8px'; row3.style.gap = '16px'; row3.append(pad, readout);
-  const row4 = el('div', 'btnrow'); row4.style.alignItems = 'center'; row4.append(lab, tgt, help);
+  const padCol = el('div'); padCol.style.display = 'grid'; padCol.style.gap = '8px'; padCol.append(pad, skewRow);
+  const row3 = el('div', 'btnrow'); row3.style.margin = '10px 0 8px'; row3.style.gap = '16px'; row3.append(padCol, readout);
+  const where = el('button', 'btn', 'Read position');
+  where.title = 'AZ, EL and SKEW on their own: the antenna reports its current angles (it sends no +POS while Idle)';
+  where.addEventListener('click', async () => { for (const c of ['AZ', 'EL', 'SKEW']) if (!await sendCommand(c)) return; });
+  const scan = el('button', 'btn', 'Band scan');
+  scan.title = 'DEBUGON, @DEBUGON, then @SCAN: the RF board steps through the current band and polarization and lists every transponder it decodes';
+  scan.title += '. Progress and results are in the Band scan card at the bottom of the page.';
+  scan.addEventListener('click', startScan);
+  const row4 = el('div', 'btnrow'); row4.style.alignItems = 'center'; row4.append(lab, where, scan, tgt, help);
   const log = el('div', 'manual-log mono'); log.setAttribute('aria-live', 'polite');
   const grid = el('div', 'manual-grid');
   const sigBox = el('div'), tgtBox = el('div');
   grid.append(sigBox, tgtBox);
-  sec.append(head, row1, pos, row2, row3, row4, grid, log,
-             note('Moves are accepted only while the antenna is in Idle mode (Halt first); press Resume tracking when done. ' +
+  sec.append(head, row1, pos, row2, rowPoint, calcOut, row3, row4, grid, log,
+             note('Moves and the band scan are accepted only while the antenna is in Idle mode (Halt first); press Resume tracking when done. ' +
                   'Azimuth is the antenna\'s own frame (no heading), the same as its +POS azimuth. While Idle the antenna ' +
                   'reports no position, so the accepted AZ/EL is shown instead.'));
-  Object.assign(cmdUI, { manual: { state, halt, track, pos, azIn, elIn, go, fill, jogBtns, sig, tgt, help, log, sigBox, tgtBox,
-                                   readout, readLive, readAge, readKey: null, sigKey: null, tgtKey: null }, readAfter });
+  Object.assign(cmdUI, { manual: { state, halt, track, pos, azIn, elIn, skIn, go, fill, skewBtns, skewNow, calc, satList, satListKey: null, jogBtns, sig, tgt, help, where, scan, log,
+                                   sigBox, tgtBox, readout, readLive, readAge, readKey: null, sigKey: null, tgtKey: null }, readAfter });
   return sec;
 }
 function renderSigReadout(m) {  // the latest SIGLEVEL reading, large, next to the jog pad
@@ -2022,8 +2243,8 @@ function renderManualTables(m) {
     if (!sigs.length) m.sigBox.replaceChildren(h, el('p', 'empty-note', 'Press Signal to read the RF signal strength at the current position (500 = noise floor).'));
     else {
       const best = M.sigBest ? M.sigBest.signal : -Infinity;
-      const rows = sigs.map(s => [fmtClock(s.t), fmt(s.az, 1), fmt(s.el, 1), fmtInt(s.signal) + (s.signal <= 500 ? ' (floor)' : '')]);
-      m.sigBox.replaceChildren(h, table(['Time', 'AZ °', 'EL °', 'Signal'], rows, sigs.map(s => s.signal === best && best > 500 ? 'hl' : null)));
+      const rows = sigs.map(s => [fmtClock(s.t), fmt(s.az, 1), fmt(s.el, 1), fmt(s.skew, 1), fmtInt(s.signal) + (s.signal <= 500 ? ' (floor)' : '')]);
+      m.sigBox.replaceChildren(h, table(['Time', 'AZ °', 'EL °', 'Skew °', 'Signal'], rows, sigs.map(s => s.signal === best && best > 500 ? 'hl' : null)));
     }
   }
   // the antenna's own target positions, in its frame: exactly what a manual move needs
@@ -2055,7 +2276,8 @@ function renderManual() {
   if (!mp) m.pos.textContent = (idle ? 'Now: position unknown (halted before this session, and no +POS comes while Idle)' : 'Now: waiting for +POS') +
                               (last ? `  ·  last signal ${fmtInt(last.signal)} (${fmtDur(nowT() - last.t)} ago)` : '');
   else if (mp.commanded) {
-    m.pos.textContent = `Now: AZ ${fmt(mp.az, 1)}°  EL ${fmt(mp.el, 1)}° (accepted ${fmtDur(nowT() - mp.t)} ago)` +
+    m.pos.textContent = `Now: AZ ${fmt(mp.az, 1)}°  EL ${fmt(mp.el, 1)}°` + (isNum(currentSkew()) ? `  skew ${fmt(currentSkew(), 1)}°` : '') +
+                        ` (accepted ${fmtDur(nowT() - mp.t)} ago)` +
                         (last ? `  ·  last signal ${fmtInt(last.signal)} (${fmtDur(nowT() - last.t)} ago)` : '');
   } else {
     const stale = idle && nowT() - p.t > 10 ? ` (last +POS ${fmtDur(nowT() - p.t)} ago)` : '';
@@ -2064,10 +2286,21 @@ function renderManual() {
   }
   m.halt.disabled = !connected || idle;
   m.track.disabled = !connected;
-  for (const b of [m.go, m.fill, ...m.jogBtns]) b.disabled = !connected || !idle;
-  for (const b of [m.sig, m.tgt, m.help]) b.disabled = !connected;
+  for (const b of [m.go, m.fill, m.scan, ...m.jogBtns, ...m.skewBtns]) b.disabled = !connected || !idle;
+  const skNow = currentSkew(), skText = isNum(skNow) ? `now ${fmt(skNow, 1)}°` : 'now unknown';
+  if (m.skewNow.textContent !== skText) m.skewNow.textContent = skText;
+  for (const b of [m.sig, m.tgt, m.help, m.where]) b.disabled = !connected;
   renderSigReadout(m);
   renderManualTables(m);
+  const known = new Map();
+  for (const x of [...Object.values(M.web.sats || {}), ...((M.web.group && M.web.group.sats) || [])]) {
+    if (x && isNum(x.lon) && !known.has(x.id)) known.set(x.id, `${Math.abs(x.lon).toFixed(2)}${x.lon < 0 ? 'W' : 'E'} ${x.name || x.id}`);
+  }
+  const listKey = [...known.values()].sort().join('|');
+  if (listKey !== m.satListKey) {
+    m.satListKey = listKey;
+    m.satList.replaceChildren(...[...known.values()].sort().map(v => { const o = el('option'); o.value = v; return o; }));
+  }
   // console: what we sent and what the antenna answered in the last few minutes
   const since = nowT() - 300, lines = [];
   for (let k = M.raw.length - 1; k >= 0 && lines.length < 24; k--) {
@@ -2279,6 +2512,93 @@ targetForm.addEventListener('submit', async e => {
 });
 for (const x of [hostIn, portIn]) x.addEventListener('input', () => setTargetMsg(null));
 
+// ============================================================ band scan card
+function newScan(t) {
+  const s = M.sel;
+  M.scan = { t0: t, t, lo_mhz: null, hi_mhz: null, pol: s ? s.pol : null, band: s ? s.band : null, lo: null,
+             sat: (M.pos && M.pos.sat) || (s && s.sat) || null, settings: {}, mhz: null, found: [], rows: [], undecoded: [],
+             pending: null, done: false, none: false };
+  return M.scan;
+}
+// The scan under way; a new one only when `create` (the scan's own banner lines). Lines after a
+// scan has finished (it prints one more "Normalize" as the RF board settles) belong to none.
+function runningScan(t, create = false) { return M.scan && !M.scan.done ? M.scan : create ? newScan(t) : null; }
+async function startScan() {
+  const s = M.sel, what = s ? `${s.sat} ${s.pol}/${s.band}` : 'the current band and polarization';
+  if (!window.confirm(`Scan ${what} from where the dish points now?\n\nThe RF board steps through the whole band (about ` +
+                      '1,200 MHz, a few minutes) and lists every transponder it can decode. Progress shows in the Band scan card.')) return;
+  // The antenna's DEBUGON, then the RF board's own Debug mode (@DEBUGON): without it the RF board
+  // answers "RF: SCAN requires Debug mode."
+  for (const c of ['DEBUGON', '@DEBUGON', '@SCAN']) if (!await sendCommand(c)) return;
+}
+$('#scanStart').addEventListener('click', startScan);
+$('#scanStop').addEventListener('click', () => sendCommand('QUIT'));
+let scanKey = null;
+function renderScanCard() {
+  const sc = M.scan, live = isLive() && M.hello && M.hello.commands;
+  const connected = M.link && M.link.link === 'connected' && !M.offline, idle = M.state === 'Idle';
+  const running = !!sc && !sc.done && isLive() && nowT() - sc.t < 60;  // no line for a minute: it has stopped
+  $('#scanStart').hidden = !live; $('#scanStop').hidden = !live || !running;
+  $('#scanStart').disabled = !connected || !idle || running;
+  $('#scanStart').title = idle ? 'Sends DEBUGON, @DEBUGON (the RF board\'s Debug mode), then @SCAN' : 'Halt the antenna first (Manual pointing, in the Commands card)';
+  const span = sc && isNum(sc.lo_mhz) && isNum(sc.hi_mhz) && sc.hi_mhz > sc.lo_mhz ? sc.hi_mhz - sc.lo_mhz : null;
+  const pct = sc && span && isNum(sc.mhz) ? Math.max(0, Math.min(1, (sc.mhz - sc.lo_mhz) / span)) : sc && sc.done ? 1 : 0;
+  const refused = M.scanRefused && (!sc || M.scanRefused.t > sc.t0) ? M.scanRefused : null;
+  const key = JSON.stringify([sc && sc.t, sc && sc.found.length, sc && sc.rows.length, sc && sc.undecoded.length, running, connected, idle,
+                              Math.floor(nowT() / 5),
+                              refused && refused.t]);
+  if (key === scanKey) return;
+  scanKey = key;
+  const status = $('#scanStatus'), body = $('#scanBody');
+  if (refused) {
+    status.replaceChildren(dotLabel('bad', `refused · ${fmtClock(refused.t)}`));
+    body.replaceChildren(el('p', 'small', refused.text));
+    return;
+  }
+  if (!sc) {
+    status.replaceChildren();
+    body.replaceChildren(empty('No scan yet. Halt the antenna where you want to look (Manual pointing, in the Commands card), pick the ' +
+      'polarization and band, then press Start scan. The RF board steps through the whole band and decodes every carrier it finds; ' +
+      'progress and the transponders show here.'));
+    return;
+  }
+  status.replaceChildren(running ? dotLabel('warn', `scanning · ${Math.round(pct * 100)}%`)
+    : sc.done && !sc.stopped ? dotLabel('good', `done · ${fmtClock(sc.t)}`)
+    : dotLabel('info', `stopped at ${sc.mhz ?? '?'} MHz · ${fmtClock(sc.t)}`));
+  const elapsed = sc.t - sc.t0, eta = running && pct > 0.02 ? elapsed / pct - elapsed : null;
+  const bar = el('div', 'scanbar'), fill = el('div');
+  fill.style.width = (pct * 100).toFixed(1) + '%';
+  bar.append(fill);
+  bar.setAttribute('role', 'progressbar'); bar.setAttribute('aria-valuenow', String(Math.round(pct * 100)));
+  bar.setAttribute('aria-valuemin', '0'); bar.setAttribute('aria-valuemax', '100');
+  const where = [sc.pol ? `${sc.pol}/${sc.band}` : null, sc.lo ? `LO ${sc.lo}` : null, sc.sat ? `on ${sc.sat}` : null].filter(Boolean).join(' · ');
+  const line = [isNum(sc.mhz) ? `${sc.mhz} MHz` : 'starting', span ? `of ${sc.lo_mhz}–${sc.hi_mhz}` : null, where || null,
+                `${sc.found.length} decoded` + (sc.undecoded.length ? `, ${sc.undecoded.length} seen but not decoded` : ''),
+                `${fmtDur(elapsed)} elapsed` + (isNum(eta) ? `, about ${fmtDur(eta)} to go` : '')].filter(Boolean).join(' · ');
+  const settings = Object.entries(sc.settings).map(([k, v]) => `${k.replace(' search', '')}: ${v}`).join(' · ');
+  // the final table when it has printed it; until then, the carriers as they were found
+  const final = sc.rows.length > 0;
+  const list = final ? sc.rows.map(r => ({ freq: r.freq, sr: r.sr, fec: r.fec, mod: r.type, nid: r.nid, oid: r.oid, pwr: r.pwr, snr: r.snr }))
+                     : sc.found.map(c => ({ freq: c.freq, sr: c.sr, fec: c.fec, mod: [c.mod, c.coding].filter(Boolean).join(' '),
+                                            nid: c.nid, oid: c.oid, pwr: c.pwr, snr: c.snr }));
+  const best = list.reduce((a, r) => (isNum(r.snr) && (!a || r.snr > a.snr) ? r : a), null);
+  const orbit = v => !v ? '—' : v === 'INVLD' || v === '999' ? '— (none)' : v;
+  const rows = list.map((r, i) => [String(i + 1), String(r.freq ?? '—'), isNum(r.sr) ? fmtInt(r.sr) : '…', r.fec || '…', r.mod || '…',
+                                   r.nid || '—', orbit(r.oid), isNum(r.pwr) ? fmtInt(r.pwr) : '—', isNum(r.snr) ? fmt(r.snr, 2) : '—']);
+  body.replaceChildren(bar, el('p', 'small muted', line), settings ? el('p', 'note', 'Searching ' + settings) : '',
+    list.length ? table(['#', 'MHz', 'ksym/s', 'FEC', 'Modulation', 'Network ID', 'Orbital position', 'Power', 'SNR dB'], rows,
+                        list.map(r => r === best ? 'hl' : null))
+                : empty(running ? 'Nothing decoded yet.' : sc.none ? 'The antenna reports: no transponders found in this band and polarization at this position.'
+                                                           : 'Nothing decoded in this band and polarization at this position.'),
+    list.length ? note((final ? 'The antenna\'s final list. ' : 'Carriers so far; the antenna prints its final list at the end. ') +
+                       'Orbital position is what each transponder itself reports, so it shows which satellite the dish is really on. ' +
+                       'The strongest SNR is highlighted.') : '',
+    sc.undecoded.length ? section('Seen but not decoded',
+      table(['MHz', 'ksym/s', 'What the RF board said'], sc.undecoded.map(u => [String(u.freq), fmtInt(u.sr), u.text])),
+      note('The RF board found a carrier at this frequency and symbol rate but could not demodulate it, so it has no network ID or ' +
+           'orbital position. It may be a mode the receiver chain doesn\'t decode, or too weak or off-beam to lock.')) : '');
+}
+
 // ============================================================ render loop
 const dirty = new Set();
 let raf = 0, lastCards = 0;
@@ -2296,6 +2616,7 @@ function frame() {
   if (dirty.has('header')) renderHeader();
   if (dirty.has('tiles')) renderTiles();
   if (dirty.has('cards')) { lastCards = performance.now(); renderSatCard(); renderSearchCard(); renderHealthCard(); updateCommandState(); }
+  if (dirty.has('data') || dirty.has('cards')) renderScanCard();  // follows the scan line by line
   if (dirty.has('chart') && !CH.wrap.hidden) drawChart();
   if (dirty.has('table') && !$('#tableWrap').hidden) refreshTable();
   dirty.clear();
@@ -2315,7 +2636,7 @@ setInterval(() => {
 // ============================================================ connection to the bridge
 // This page is read from disk on every load, but the bridge only changes when it is restarted.
 // Keep BRIDGE_API in step with tvhub_server.py; the hello tells us what the running bridge has.
-const BRIDGE_API = 2;
+const BRIDGE_API = 3;
 function renderBridgeBanner(h) {
   const box = $('#bridgeBanner');
   let text = null;
