@@ -129,12 +129,26 @@ def call(host: str, name: str, params: dict | None = None, timeout: float = 5.0,
     return check_reply(name, data)
 
 
+def _unknown_message(name: str) -> WebServiceError:
+    """The hub doesn't implement this message; raise it as code 3 so callers stop asking."""
+    err = WebServiceError(f"{name}: not supported by this TV-Hub (unknown message)")
+    err.code = "3"  # the hub's own "unknown message" code, already in PERMANENT_ERRORS
+    return err
+
+
 def check_reply(name: str, data: bytes) -> ET.Element:
     try:
         root = ET.fromstring(data)
     except ET.ParseError as e:
+        # Firmware that doesn't implement a message answers with malformed XML whose body names
+        # the generic "unknown_xml_message" handler. Treat that as a permanent "unknown message"
+        # rather than a transient parse error, so the poller stops asking for it this session.
+        if b"unknown_xml_message" in data:
+            raise _unknown_message(name) from e
         raise WebServiceError(f"{name}: reply is not XML ({e})") from e
     msg = root.find("message")
+    if msg is not None and msg.get("name") == "unknown_xml_message":  # same, but well-formed
+        raise _unknown_message(name)
     code = msg.get("error") if msg is not None else None
     if code != "0":
         err = WebServiceError(f"{name}: hub answered error {code} ({ERRORS.get(code or '', 'unknown')})")

@@ -94,6 +94,13 @@ REPLIES = {
       </event_list></ipacu_response>""",
 }
 
+# What a TV-Hub that doesn't implement a message actually returns: malformed XML naming its
+# generic unknown_xml_message handler, followed by a wrapper saying the server returned invalid XML.
+UNKNOWN_REPLY = ('<?xml version="1.0" encoding="UTF-8"?><ipacu_response> '
+                 '<message name="unknown_xml_message" error="1"</ipacu_response>\n'
+                 '<?xml version="1.0"?>\n'
+                 '<ipacu_response><message name="get_blockage_zones" error="server returned invalid xml"/></ipacu_response>')
+
 
 class FakeWebService:
     """Stands in for the TV-Hub's /webservice.php: canned replies, records every request body."""
@@ -170,6 +177,23 @@ class RequestTests(unittest.TestCase):
         self.assertIn("unknown message", str(ctx.exception))
         with self.assertRaises(ws.WebServiceError):
             ws.check_reply("power", b"<html>not xml")
+
+    def test_unknown_message_reply_is_permanent(self):
+        # the real hub's malformed "unknown message" reply -> code 3 so the poller stops asking
+        with self.assertRaises(ws.WebServiceError) as ctx:
+            ws.check_reply("get_blockage_zones", UNKNOWN_REPLY.encode())
+        self.assertEqual(ctx.exception.code, "3")
+        self.assertIn("unknown message", str(ctx.exception))
+        self.assertIn("3", ws.PERMANENT_ERRORS)
+        # also the well-formed variant
+        wf = b'<ipacu_response><message name="unknown_xml_message" error="1"/></ipacu_response>'
+        with self.assertRaises(ws.WebServiceError) as ctx2:
+            ws.check_reply("get_hazard_zones", wf)
+        self.assertEqual(ctx2.exception.code, "3")
+        # a genuinely corrupt reply (no unknown_xml_message) stays a non-permanent parse error
+        with self.assertRaises(ws.WebServiceError) as ctx3:
+            ws.check_reply("power", b"<ipacu_response><garbage")
+        self.assertIsNone(ctx3.exception.code)
 
 
 class SelectRequestTests(unittest.TestCase):
@@ -376,6 +400,19 @@ class PollerTests(unittest.TestCase):
             self.assertEqual(self.web("antenna_status")[-1]["data"]["state"], "SEARCHING")
         finally:
             REPLIES["antenna_status"] = REPLIES["antenna_status"].replace("<state>SEARCHING</state>", "<state>TRACKING</state>")
+
+    def test_unknown_message_stops_being_asked(self):
+        orig = REPLIES["get_blockage_zones"]
+        REPLIES["get_blockage_zones"] = UNKNOWN_REPLY  # the hub says it doesn't implement it
+        self.poller.EVERY_S = dict(HubWebPoller.EVERY_S, get_blockage_zones=0.05, antenna_status=0.05)
+        try:
+            self.poller.start()
+            self.assertTrue(wait_for(lambda: self.fake.names().count("antenna_status") >= 6))  # many cycles pass
+            self.assertEqual(self.fake.names().count("get_blockage_zones"), 1)  # asked once, then disabled
+            notes = [r["text"] for r in self.records("bridge")]
+            self.assertTrue(any("not asking again" in n and "blockage" in n.lower() for n in notes), notes)
+        finally:
+            REPLIES["get_blockage_zones"] = orig
 
     def test_unreachable_hub_noted_once(self):
         calls = []
