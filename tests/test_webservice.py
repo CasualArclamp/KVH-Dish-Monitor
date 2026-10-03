@@ -66,6 +66,19 @@ REPLIES = {
         <nmea_message><nmea_name>Heading from magnetic compass</nmea_name><heading_value>260</heading_value>
           <nmea_source>MAG-HEADING</nmea_source><state>ACTIVE</state><selected>N</selected></nmea_message>
         </message_list></nmea2000></ipacu_response>""",
+    "get_blockage_zones": """<ipacu_response><message error="0" name="get_blockage_zones"/>
+      <el_support>TRUE</el_support><total_zones>2</total_zones><zone_list>
+        <zone><id>1</id><state>ON</state><az_min>0</az_min><az_max>360</az_max><el_min>-5</el_min><el_max>10</el_max></zone>
+        <zone><id>2</id><state>OFF</state><az_min>233</az_min><az_max>243</az_max><el_min>0</el_min><el_max>75</el_max></zone>
+        </zone_list></ipacu_response>""",
+    "get_hazard_zones": """<ipacu_response><message error="0" name="get_hazard_zones"/>
+      <el_support>TRUE</el_support><mismatch>NO</mismatch><total_zones>1</total_zones>
+      <acu_list><override>OFF</override>
+        <zone><id>1</id><state>ON</state><az_min>100</az_min><az_max>120</az_max><el_min>0</el_min><el_max>30</el_max></zone>
+        </acu_list>
+      <ant_list><override>OFF</override>
+        <zone><id>1</id><state>ON</state><az_min>100</az_min><az_max>120</az_max><el_min>0</el_min><el_max>30</el_max></zone>
+        </ant_list></ipacu_response>""",
     "get_autoswitch_status": """<ipacu_response><message name="get_autoswitch_status" error="0" /><available>Y</available>
       <enable>N</enable><service>DISEQC</service><master><sn>000000000</sn><name>TV-Hub</name><valid>Y</valid><sat>B</sat></master>
       <satellite_group>Australia</satellite_group><satellites>
@@ -285,6 +298,18 @@ class ParseTests(unittest.TestCase):
         self.assertTrue(d["has_heading"])
         self.assertEqual((d["selected"]["source"], d["selected"]["heading"], d["selected"]["bus"]), ("HEHDT", 274.0, "nmea0183"))
         self.assertEqual(len(d["sources"]), 2)  # both buses' messages are listed; only the active, selected one is chosen
+
+    def test_blockage_zones(self):
+        d = ws.parse_blockage_zones(self.reply("get_blockage_zones"))
+        self.assertEqual((d["el_support"], d["total"], len(d["zones"])), (True, 2, 2))
+        z = d["zones"][0]
+        self.assertEqual((z["id"], z["state"], z["az_min"], z["az_max"], z["el_min"], z["el_max"]), ("1", "ON", 0.0, 360.0, -5.0, 10.0))
+
+    def test_hazard_zones(self):
+        d = ws.parse_hazard_zones(self.reply("get_hazard_zones"))
+        self.assertFalse(d["mismatch"])
+        self.assertEqual((d["acu"]["override"], len(d["acu"]["zones"])), (False, 1))
+        self.assertEqual(d["ant"]["zones"][0]["az_min"], 100.0)
 
     def test_events_in_utc(self):
         ev = ws.parse_events(self.reply("get_recent_event_history"))["events"]

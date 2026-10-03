@@ -40,6 +40,8 @@ READ_ONLY = {
     "get_lnb_list": (),
     "get_gps": (),
     "get_heading_config": (),
+    "get_blockage_zones": (),
+    "get_hazard_zones": (),
     "get_event_history_count": (),
     "get_recent_event_history": ("begin_at_event", "how_many_events"),
     "get_autoswitch_status": (),
@@ -265,6 +267,36 @@ def parse_heading_config(root: ET.Element) -> dict:
     return {"sources": sources, "selected": active, "has_heading": active is not None}
 
 
+def _zones(el: ET.Element | None) -> list:
+    """The AZ/EL keep-out rectangles in a <zone_list>/<acu_list>/<ant_list>."""
+    if el is None:
+        return []
+    out = []
+    for z in el.iter("zone"):
+        out.append({"id": _text(z, "id"), "state": _text(z, "state"),
+                    "az_min": _num(z, "az_min"), "az_max": _num(z, "az_max"),
+                    "el_min": _num(z, "el_min"), "el_max": _num(z, "el_max")})
+    return out
+
+
+def parse_blockage_zones(root: ET.Element) -> dict:
+    """Azimuth/elevation sectors where the dish's view is known to be obstructed."""
+    zones = _zones(root.find("zone_list"))
+    n = _num(root, "total_zones")
+    return {"el_support": _text(root, "el_support") == "TRUE",
+            "total": int(n) if n is not None else len(zones), "zones": zones}
+
+
+def parse_hazard_zones(root: ET.Element) -> dict:
+    """RF-transmit keep-out sectors. The hub holds its own copy (acu_list) and the antenna's
+    (ant_list), each with an override flag; <mismatch> says whether the two copies disagree."""
+    def side(tag: str) -> dict | None:
+        el = root.find(tag)
+        return None if el is None else {"override": _text(el, "override") == "ON", "zones": _zones(el)}
+    return {"el_support": _text(root, "el_support") == "TRUE", "mismatch": _text(root, "mismatch") == "YES",
+            "acu": side("acu_list"), "ant": side("ant_list")}
+
+
 def parse_event_count(root: ET.Element) -> dict:
     n = _num(root, "event_count")
     return {"count": int(n) if n is not None else None}
@@ -315,6 +347,7 @@ PARSERS = {
     "get_antenna_config": parse_config, "ophours": parse_ophours, "get_satellite_list": parse_satellite_list,
     "get_satellite_params": parse_satellite_params, "get_lnb_list": parse_lnb_list,
     "get_gps": parse_gps, "get_heading_config": parse_heading_config,
+    "get_blockage_zones": parse_blockage_zones, "get_hazard_zones": parse_hazard_zones,
     "get_event_history_count": parse_event_count,
     "get_recent_event_history": parse_events, "get_autoswitch_status": parse_autoswitch,
 }

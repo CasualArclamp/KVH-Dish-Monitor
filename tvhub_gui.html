@@ -341,7 +341,7 @@ function newModel() {
     sig: [], sigBest: null, targets: {}, cmdPos: null, lastTx: null, scan: null, scanRefused: null, skewSent: null,
     // the TV-Hub's web service, polled read-only by the bridge
     web: { status: null, power: null, versions: null, config: null, hours: null, sats: {}, params: {}, alerts: null, alertKeys: new Set(),
-           group: null, lnbList: null, gps: null, heading: null },  // manual pointing: SIGLEVEL readings, TGTLOCATION, position while Idle
+           group: null, lnbList: null, gps: null, heading: null, blockage: null, hazard: null },  // manual pointing: SIGLEVEL readings, TGTLOCATION, position while Idle
     ticks: { t: [], az: [], el: [], skew: [], rf: [], snr: [], sub: [], bstAz: [], bstEl: [], bst3: [] },
     agcS: { t: [], v: [] },
     sigS: { t: [], v: [], az: [], el: [] },  // SIGLEVEL readings for the chart, with the position each was taken at
@@ -738,6 +738,8 @@ const H = {
       case 'get_lnb_list': W.lnbList = { ...d, t }; break;
       case 'get_gps': W.gps = { ...d, t }; break;
       case 'get_heading_config': W.heading = { ...d, t }; break;
+      case 'get_blockage_zones': W.blockage = { ...d, t }; break;
+      case 'get_hazard_zones': W.hazard = { ...d, t }; break;
       case 'get_recent_event_history': {
         const first = W.alerts == null;
         W.alerts = d.events || [];
@@ -1901,7 +1903,28 @@ function renderHubWeb(out) {  // Health card: what the TV-Hub's web service repo
                                         : dotLabel(acq ? 'good' : 'warn', W.gps.state)]);
   }
   if (W.heading) rows.push(['Heading input', headingText(W.heading)]);
+  if (W.blockage) {
+    const z = W.blockage.zones || [], act = z.filter(x => /ON/i.test(x.state || '')).length;
+    rows.push(['Blockage zones', z.length ? `${z.length} defined · ${act} active` : 'none defined']);
+  }
+  if (W.hazard) {
+    const z = (W.hazard.acu && W.hazard.acu.zones) || [], act = z.filter(x => /ON/i.test(x.state || '')).length;
+    const base = z.length ? `${z.length} defined · ${act} active` : 'none defined';
+    rows.push(['Hazard zones', W.hazard.mismatch ? dotLabel('warn', `${base} · hub and antenna copies differ`) : base]);
+  }
   out.push(section('TV-Hub (web service)', kv(rows)));
+  for (const Z of [{ d: W.blockage, title: 'Blockage zones', zones: W.blockage && W.blockage.zones,
+                     note: 'Azimuth/elevation sectors the hub treats as blocked (get_blockage_zones).' },
+                   { d: W.hazard, title: 'Hazard zones (RF keep-out)', zones: W.hazard && W.hazard.acu && W.hazard.acu.zones,
+                     note: 'RF-transmit keep-out sectors the hub holds (get_hazard_zones, ACU copy).' }]) {
+    if (Z.d && Z.zones && Z.zones.length) {
+      const elOK = Z.d.el_support;
+      out.push(section(Z.title, table(['#', 'State', 'AZ °', elOK ? 'EL °' : 'EL (n/a)'],
+        Z.zones.map(z => [z.id, z.state || '—',
+          `${fmt(z.az_min, 0)}–${fmt(z.az_max, 0)}`, elOK ? `${fmt(z.el_min, 0)}–${fmt(z.el_max, 0)}` : '—'])),
+        note(Z.note)));
+    }
+  }
   const alerts = hubAlerts();
   if (alerts.length) {
     const act = alerts.filter(e => e.active).length, shown = alerts.filter((e, i) => i < 10 || e.active);
