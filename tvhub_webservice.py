@@ -38,6 +38,8 @@ READ_ONLY = {
     "get_satellite_list": (),
     "get_satellite_params": ("antSatID",),
     "get_lnb_list": (),
+    "get_gps": (),
+    "get_heading_config": (),
     "get_event_history_count": (),
     "get_recent_event_history": ("begin_at_event", "how_many_events"),
     "get_autoswitch_status": (),
@@ -237,6 +239,32 @@ def parse_lnb_list(root: ET.Element) -> dict:
     return {"lnbs": [n for n in names if n], "custom_enabled": _text(root, "enable") == "Y"}
 
 
+def parse_gps(root: ET.Element) -> dict:
+    """The hub's GPS fix state only (ACQUIRED | ACQUIRING | ERROR | MANUAL). The position itself
+    (lat/lon/city) is deliberately dropped, as everywhere else in this module; the monitor already
+    shows the site from the antenna's $GPRMC, and screenshots of the page get committed."""
+    return {"state": _text(root, "state")}
+
+
+def parse_heading_config(root: ET.Element) -> dict:
+    """Whether a true-heading input (an NMEA gyro or compass) is configured and which source, if any,
+    is selected and active. With no heading the dome's azimuth offset has to be learned while tracking."""
+    sources = []
+    for bus in ("nmea0183", "nmea2000"):
+        b = root.find(bus)
+        if b is None:
+            continue
+        bus_enabled = _text(b, "enable") == "Y"
+        for m in b.iter("nmea_message"):
+            sources.append({
+                "bus": bus, "bus_enabled": bus_enabled, "name": _text(m, "nmea_name"),
+                "source": _text(m, "nmea_source"), "heading": _num(m, "heading_value"),
+                "state": _text(m, "state"), "selected": _text(m, "selected") == "Y",
+            })
+    active = next((s for s in sources if s["selected"] and (s["state"] or "").upper() == "ACTIVE" and s["bus_enabled"]), None)
+    return {"sources": sources, "selected": active, "has_heading": active is not None}
+
+
 def parse_event_count(root: ET.Element) -> dict:
     n = _num(root, "event_count")
     return {"count": int(n) if n is not None else None}
@@ -286,6 +314,7 @@ PARSERS = {
     "antenna_status": parse_antenna_status, "power": parse_power, "antenna_versions": parse_versions,
     "get_antenna_config": parse_config, "ophours": parse_ophours, "get_satellite_list": parse_satellite_list,
     "get_satellite_params": parse_satellite_params, "get_lnb_list": parse_lnb_list,
+    "get_gps": parse_gps, "get_heading_config": parse_heading_config,
     "get_event_history_count": parse_event_count,
     "get_recent_event_history": parse_events, "get_autoswitch_status": parse_autoswitch,
 }

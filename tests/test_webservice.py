@@ -55,6 +55,17 @@ REPLIES = {
     "get_lnb_list": """<ipacu_response><message name="get_lnb_list" error="0"></message><lnb_list>
       <name>19-0444 Single Linear</name><name>19-0298 Dual Linear</name><name>19-AUST Aust Dual Linear</name>
       </lnb_list><enable>N</enable></ipacu_response>""",
+    "get_gps": """<ipacu_response><message name="get_gps" error="0"/><state>ACQUIRED</state>
+      <lat>12.345678</lat><lon>-98.765432</lon><city>PLACEHOLDER CITY</city></ipacu_response>""",
+    "get_heading_config": """<ipacu_response><message name="get_heading_config" error="0" />
+      <nmea0183><enable>Y</enable><message_list>
+        <nmea_message><nmea_name>True heading from north seeking gyro</nmea_name><heading_value>274</heading_value>
+          <nmea_source>HEHDT</nmea_source><state>ACTIVE</state><selected>Y</selected></nmea_message>
+        </message_list></nmea0183>
+      <nmea2000><enable>N</enable><message_list>
+        <nmea_message><nmea_name>Heading from magnetic compass</nmea_name><heading_value>260</heading_value>
+          <nmea_source>MAG-HEADING</nmea_source><state>ACTIVE</state><selected>N</selected></nmea_message>
+        </message_list></nmea2000></ipacu_response>""",
     "get_autoswitch_status": """<ipacu_response><message name="get_autoswitch_status" error="0" /><available>Y</available>
       <enable>N</enable><service>DISEQC</service><master><sn>000000000</sn><name>TV-Hub</name><valid>Y</valid><sat>B</sat></master>
       <satellite_group>Australia</satellite_group><satellites>
@@ -261,6 +272,19 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(d["lnbs"][-1], "19-AUST Aust Dual Linear")
         self.assertEqual(len(d["lnbs"]), 3)
         self.assertFalse(d["custom_enabled"])
+
+    def test_gps_keeps_position_out(self):
+        d = ws.parse_gps(self.reply("get_gps"))
+        self.assertEqual(d["state"], "ACQUIRED")
+        blob = json.dumps(d)  # the position must never reach the record stream or the session log
+        for leak in ("12.345678", "98.765432", "PLACEHOLDER CITY", "lat", "lon", "city"):
+            self.assertNotIn(leak, blob)
+
+    def test_heading_config(self):
+        d = ws.parse_heading_config(self.reply("get_heading_config"))
+        self.assertTrue(d["has_heading"])
+        self.assertEqual((d["selected"]["source"], d["selected"]["heading"], d["selected"]["bus"]), ("HEHDT", 274.0, "nmea0183"))
+        self.assertEqual(len(d["sources"]), 2)  # both buses' messages are listed; only the active, selected one is chosen
 
     def test_events_in_utc(self):
         ev = ws.parse_events(self.reply("get_recent_event_history"))["events"]

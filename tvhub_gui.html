@@ -341,7 +341,7 @@ function newModel() {
     sig: [], sigBest: null, targets: {}, cmdPos: null, lastTx: null, scan: null, scanRefused: null, skewSent: null,
     // the TV-Hub's web service, polled read-only by the bridge
     web: { status: null, power: null, versions: null, config: null, hours: null, sats: {}, params: {}, alerts: null, alertKeys: new Set(),
-           group: null, lnbList: null },  // manual pointing: SIGLEVEL readings, TGTLOCATION, position while Idle
+           group: null, lnbList: null, gps: null, heading: null },  // manual pointing: SIGLEVEL readings, TGTLOCATION, position while Idle
     ticks: { t: [], az: [], el: [], skew: [], rf: [], snr: [], sub: [], bstAz: [], bstEl: [], bst3: [] },
     agcS: { t: [], v: [] },
     sigS: { t: [], v: [], az: [], el: [] },  // SIGLEVEL readings for the chart, with the position each was taken at
@@ -736,6 +736,8 @@ const H = {
       case 'get_satellite_list': W.sats = Object.fromEntries((d.sats || []).map(x => [x.id, x])); break;
       case 'get_satellite_params': if (d.sat) W.params[d.sat] = { ...d, t }; break;
       case 'get_lnb_list': W.lnbList = { ...d, t }; break;
+      case 'get_gps': W.gps = { ...d, t }; break;
+      case 'get_heading_config': W.heading = { ...d, t }; break;
       case 'get_recent_event_history': {
         const first = W.alerts == null;
         W.alerts = d.events || [];
@@ -1575,6 +1577,12 @@ const satName = id => {
   const W = M.web, x = id && (W.params[id] || W.sats[id] || (W.group && (W.group.sats || []).find(g => g.id === id)));
   return x && x.name ? x.name : null;
 };
+function headingText(h) {  // get_heading_config: the selected true-heading source, or that there is none
+  const sel = h.selected;
+  if (!sel) return dotLabel('info', 'none selected — the dome azimuth offset is learned while tracking');
+  const name = sel.name || sel.source;
+  return dotLabel('good', `${name}${isNum(sel.heading) ? ` ${fmt(sel.heading, 0)}°` : ''} · ${sel.source} on ${sel.bus} · active`);
+}
 function hubAlerts() {  // newest first, each marked active when no later "RESOLVED" line matches it
   const list = M.web.alerts || [], out = [];
   for (let k = list.length - 1; k >= 0; k--) {
@@ -1814,7 +1822,9 @@ function renderSearchCard() {
       ['Expected true AZ / EL', isNum(g.el) ? `${fmt(g.az, 1)}° / ${fmt(g.el, 1)}°` : null],
       ['Expected skew', isNum(g.skew) ? `${fmt(g.skew, 1)}°` + (p ? ` (antenna ${fmt(p.skew, 1)}°)` : '') : null],
       ['Measured EL', p ? `position ${fmt(p.el, 1)}°` + (M.bst ? ` · boresight ${fmt(M.bst.el, 1)}°` : '') : null],
-      ['Dome AZ − true AZ', domeOff != null ? `${fmt(domeOff, 1)}° (no heading input)` : null],
+      ['Dome AZ − true AZ', domeOff != null ? `${fmt(domeOff, 1)}° (${M.web.heading && M.web.heading.selected
+        ? `heading ${isNum(M.web.heading.selected.heading) ? fmt(M.web.heading.selected.heading, 0) + '° from ' : ''}${M.web.heading.selected.source}`
+        : 'no heading input'})` : null],
       ['Highest GEO elevation', `${fmt(g.elMax, 1)}°`],
     ]), note('A detection above the highest GEO elevation cannot be a satellite: it is a sidelobe or false detect.')));
   } else {
@@ -1885,6 +1895,12 @@ function renderHubWeb(out) {  // Health card: what the TV-Hub's web service repo
   if (W.config) rows.push(['Sleep · sidelobe', `${W.config.sleep || '—'} · ${W.config.sidelobe || '—'}`]);
   if (W.hours && isNum(W.hours.hours)) rows.push(['Operational hours', W.hours.hours.toLocaleString('en-US', { minimumFractionDigits: 1 })]);
   if (v) rows.push(['Software', `hub ${v.hub_software || '?'}${v.in_sync === 'N' ? ' (not in sync)' : ''} · satellite library ${v.sat_library || '?'} · antenna ${v.antenna_software || '?'} · RF ${v.rf || '?'}`]);
+  if (W.gps && W.gps.state) {  // get_gps: fix state only (the position itself is kept out, as everywhere in the web service)
+    const manual = /MANUAL/i.test(W.gps.state), acq = /^ACQUIRED$/i.test(W.gps.state);
+    rows.push(['GPS fix (hub)', manual ? dotLabel('warn', 'MANUAL — position entered by hand, not a live fix')
+                                        : dotLabel(acq ? 'good' : 'warn', W.gps.state)]);
+  }
+  if (W.heading) rows.push(['Heading input', headingText(W.heading)]);
   out.push(section('TV-Hub (web service)', kv(rows)));
   const alerts = hubAlerts();
   if (alerts.length) {
