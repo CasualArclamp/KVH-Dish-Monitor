@@ -52,6 +52,9 @@ REPLIES = {
         <fec>1/2</fec><netID>0XFFFE</netID><modType>QDVB</modType></xponder>
       <xponder><id>1</id><display>Horizontal High</display><pol>H</pol><band>H</band><freq>12279</freq><symRate>30000</symRate>
         <fec>3/4</fec><netID>0XFFFE</netID><modType>LQPSK</modType></xponder></ipacu_response>""",
+    "get_lnb_list": """<ipacu_response><message name="get_lnb_list" error="0"></message><lnb_list>
+      <name>19-0444 Single Linear</name><name>19-0298 Dual Linear</name><name>19-AUST Aust Dual Linear</name>
+      </lnb_list><enable>N</enable></ipacu_response>""",
     "get_autoswitch_status": """<ipacu_response><message name="get_autoswitch_status" error="0" /><available>Y</available>
       <enable>N</enable><service>DISEQC</service><master><sn>000000000</sn><name>TV-Hub</name><valid>Y</valid><sat>B</sat></master>
       <satellite_group>Australia</satellite_group><satellites>
@@ -252,6 +255,12 @@ class ParseTests(unittest.TestCase):
         d = ws.parse_satellite_params(self.reply("get_satellite_params", sat="USER4"))
         self.assertEqual([x["id"] for x in d["xponders"]], ["1", "2"])
         self.assertEqual((d["skew_offset"], d["computed_skew"]), (-45.0, 32.4))
+
+    def test_lnb_list(self):
+        d = ws.parse_lnb_list(self.reply("get_lnb_list"))
+        self.assertEqual(d["lnbs"][-1], "19-AUST Aust Dual Linear")
+        self.assertEqual(len(d["lnbs"]), 3)
+        self.assertFalse(d["custom_enabled"])
 
     def test_events_in_utc(self):
         ev = ws.parse_events(self.reply("get_recent_event_history"))["events"]

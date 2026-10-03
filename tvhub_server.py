@@ -459,7 +459,8 @@ class HubWebPoller(threading.Thread):
     what is already known is republished only when it changes or every REPUBLISH_S."""
 
     EVERY_S = {"antenna_status": 5, "power": 60, "get_event_history_count": 60, "get_antenna_config": 600,
-               "ophours": 600, "antenna_versions": 1800, "get_satellite_list": 1800, "get_autoswitch_status": 30}
+               "ophours": 600, "antenna_versions": 1800, "get_satellite_list": 1800, "get_autoswitch_status": 30,
+               "get_lnb_list": 1800}  # the LNB preset catalogue is static hardware config
     PARAMS_EVERY_S = 900        # get_satellite_params, for the tracked satellite and each favourite
     REPUBLISH_S = {"antenna_status": 60}  # at least this often even if unchanged
     REPUBLISH_DEFAULT_S = 1800

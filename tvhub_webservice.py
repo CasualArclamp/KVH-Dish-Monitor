@@ -37,6 +37,7 @@ READ_ONLY = {
     "ophours": (),
     "get_satellite_list": (),
     "get_satellite_params": ("antSatID",),
+    "get_lnb_list": (),
     "get_event_history_count": (),
     "get_recent_event_history": ("begin_at_event", "how_many_events"),
     "get_autoswitch_status": (),
@@ -229,6 +230,13 @@ def parse_satellite_params(root: ET.Element) -> dict:
     }
 
 
+def parse_lnb_list(root: ET.Element) -> dict:
+    """The LNB presets the hub offers, and whether custom-LNB entry is enabled (<enable>Y|N</enable>)."""
+    group = root.find("lnb_list")
+    names = [(n.text or "").strip() for n in group.iter("name")] if group is not None else []
+    return {"lnbs": [n for n in names if n], "custom_enabled": _text(root, "enable") == "Y"}
+
+
 def parse_event_count(root: ET.Element) -> dict:
     n = _num(root, "event_count")
     return {"count": int(n) if n is not None else None}
@@ -277,7 +285,8 @@ def parse_autoswitch(root: ET.Element) -> dict:
 PARSERS = {
     "antenna_status": parse_antenna_status, "power": parse_power, "antenna_versions": parse_versions,
     "get_antenna_config": parse_config, "ophours": parse_ophours, "get_satellite_list": parse_satellite_list,
-    "get_satellite_params": parse_satellite_params, "get_event_history_count": parse_event_count,
+    "get_satellite_params": parse_satellite_params, "get_lnb_list": parse_lnb_list,
+    "get_event_history_count": parse_event_count,
     "get_recent_event_history": parse_events, "get_autoswitch_status": parse_autoswitch,
 }
 

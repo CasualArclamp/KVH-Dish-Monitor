@@ -341,7 +341,7 @@ function newModel() {
     sig: [], sigBest: null, targets: {}, cmdPos: null, lastTx: null, scan: null, scanRefused: null, skewSent: null,
     // the TV-Hub's web service, polled read-only by the bridge
     web: { status: null, power: null, versions: null, config: null, hours: null, sats: {}, params: {}, alerts: null, alertKeys: new Set(),
-           group: null },  // manual pointing: SIGLEVEL readings, TGTLOCATION, position while Idle
+           group: null, lnbList: null },  // manual pointing: SIGLEVEL readings, TGTLOCATION, position while Idle
     ticks: { t: [], az: [], el: [], skew: [], rf: [], snr: [], sub: [], bstAz: [], bstEl: [], bst3: [] },
     agcS: { t: [], v: [] },
     sigS: { t: [], v: [], az: [], el: [] },  // SIGLEVEL readings for the chart, with the position each was taken at
@@ -735,6 +735,7 @@ const H = {
       case 'get_autoswitch_status': W.group = { ...d, t }; break;
       case 'get_satellite_list': W.sats = Object.fromEntries((d.sats || []).map(x => [x.id, x])); break;
       case 'get_satellite_params': if (d.sat) W.params[d.sat] = { ...d, t }; break;
+      case 'get_lnb_list': W.lnbList = { ...d, t }; break;
       case 'get_recent_event_history': {
         const first = W.alerts == null;
         W.alerts = d.events || [];
@@ -1871,6 +1872,15 @@ function renderHubWeb(out) {  // Health card: what the TV-Hub's web service repo
   if (v && v.lnb) {
     const l = v.lnb, lo = (f, tone) => f && f !== 'OFF' ? `${f} MHz (tone ${String(tone || '?').toLowerCase()})` : 'off';
     rows.push(['LNB (hub setting)', [l.name || '?', l.voltage, `LO1 ${lo(l.LO1_freq, l.LO1_tone)}`, `LO2 ${lo(l.LO2_freq, l.LO2_tone)}`].filter(Boolean).join(' · ')]);
+  }
+  if (W.lnbList && (W.lnbList.lnbs || []).length) {  // get_lnb_list: the presets the hub offers, current one marked
+    const cur = v && v.lnb && v.lnb.name ? v.lnb.name.toLowerCase() : null, box = el('div');
+    for (const n of W.lnbList.lnbs) {
+      const row = el('div');
+      row.append(cur && n.toLowerCase().includes(cur) ? dotLabel('good', n + ' (in use)') : document.createTextNode(n));
+      box.append(row);
+    }
+    rows.push(['LNB presets' + (W.lnbList.custom_enabled ? ' · custom entry enabled' : ''), box]);
   }
   if (W.config) rows.push(['Sleep · sidelobe', `${W.config.sleep || '—'} · ${W.config.sidelobe || '—'}`]);
   if (W.hours && isNum(W.hours.hours)) rows.push(['Operational hours', W.hours.hours.toLocaleString('en-US', { minimumFractionDigits: 1 })]);
